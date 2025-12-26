@@ -1125,7 +1125,7 @@ function NewsSentimentFeed() {
 // ========== Main Component ==========
 
 export default function Home() {
-  const [source, setSource] = useState<PriceSource>("hyperliquid");
+  const [source, setSource] = useState<PriceSource>("binance");
   const [priceDirection, setPriceDirection] = useState<Direction | null>(null);
   const [moveSize, setMoveSize] = useState<MoveSize>(null);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
@@ -1141,9 +1141,6 @@ export default function Home() {
   const lastAudioTimeRef = useRef<number>(0);
   const pendingAudioRef = useRef<{ direction: Direction; bps: number } | null>(null);
   const audioThrottleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Shadow source is opposite of main source
-  const shadowSource: PriceSource = source === "hyperliquid" ? "binance" : "hyperliquid";
 
   // Calculate move size from bps
   const getMoveSize = useCallback((bps: number): MoveSize => {
@@ -1357,9 +1354,6 @@ export default function Home() {
 
   // Use the main price hook
   const { price: primaryPrice, formattedPrice, status } = usePrice(source, handlePriceChange);
-
-  // Use the shadow price hook (background feed)
-  const shadowPrice = useShadowPrice(shadowSource);
 
   // Reset audio throttle state when source changes
   useEffect(() => {
@@ -1592,17 +1586,10 @@ export default function Home() {
           </div>
 
           {/* Status + Price Gap */}
-          <div className="flex flex-col items-center gap-3">
-            <div className="text-white/20 text-xs tracking-widest uppercase">
-              {status === "connected" && "Live"}
-              {status === "connecting" && "Connecting..."}
-              {status === "disconnected" && "Reconnecting..."}
-            </div>
-            <PriceGap 
-              primaryPrice={primaryPrice} 
-              shadowPrice={shadowPrice} 
-              primarySource={source} 
-            />
+          <div className="text-white/20 text-xs tracking-widest uppercase">
+            {status === "connected" && "Live"}
+            {status === "connecting" && "Connecting..."}
+            {status === "disconnected" && "Reconnecting..."}
           </div>
         </div>
 
