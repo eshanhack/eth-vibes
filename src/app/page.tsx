@@ -8,6 +8,29 @@ type Direction = "up" | "down";
 type MoveSize = "small" | "medium" | "whale" | null;
 type PriceSource = "hyperliquid" | "binance";
 
+// Timeframe keys for multi-timeframe analysis
+type TimeframeKey = "1m" | "10m" | "30m" | "1h" | "1d";
+
+// Individual timeframe data
+interface TimeframeData {
+  price: number | null;
+  change: number | null;
+  pending: boolean;
+}
+
+// Tweet with multi-timeframe price data
+interface TweetWithPrice {
+  id: string;
+  text: string;
+  createdAt: string;
+  timestamp: number;
+  url?: string;
+  priceAtT: number | null;
+  timeframes: Record<TimeframeKey, TimeframeData>;
+  impactScore: number;
+  impactDirection: "positive" | "negative" | "neutral";
+}
+
 // Spring transition for digit roller - snappy, mechanical feel
 const digitSpringTransition = {
   type: "spring" as const,
@@ -268,6 +291,175 @@ function useShadowPrice(source: PriceSource): number | null {
   return price;
 }
 
+// ========== useNewsFeed Hook ==========
+const PRICE_FETCH_DELAY_MS = 300; // Delay between price fetches to avoid rate limiting
+
+// Helper function to add delay
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Default empty timeframes
+const EMPTY_TIMEFRAMES: Record<TimeframeKey, TimeframeData> = {
+  "1m": { price: null, change: null, pending: true },
+  "10m": { price: null, change: null, pending: true },
+  "30m": { price: null, change: null, pending: true },
+  "1h": { price: null, change: null, pending: true },
+  "1d": { price: null, change: null, pending: true },
+};
+
+function useNewsFeed() {
+  const [tweets, setTweets] = useState<TweetWithPrice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isDemo, setIsDemo] = useState(false);
+  const [source, setSource] = useState<string>("");
+
+  // Function to fetch multi-timeframe price for a single tweet
+  const fetchMultiTimeframePrices = useCallback(async (timestamp: number): Promise<{
+    priceAtT: number | null;
+    timeframes: Record<TimeframeKey, TimeframeData>;
+    impactScore: number;
+    impactDirection: "positive" | "negative" | "neutral";
+  }> => {
+    try {
+      const priceRes = await fetch(`/api/price-history?timestamp=${timestamp}&multi=true`);
+      const priceData = await priceRes.json();
+      return {
+        priceAtT: priceData.priceAtT,
+        timeframes: priceData.timeframes || EMPTY_TIMEFRAMES,
+        impactScore: priceData.impactScore || 0,
+        impactDirection: priceData.impactDirection || "neutral",
+      };
+    } catch {
+      return {
+        priceAtT: null,
+        timeframes: EMPTY_TIMEFRAMES,
+        impactScore: 0,
+        impactDirection: "neutral",
+      };
+    }
+  }, []);
+
+  // Function to update a single tweet's price data (for refreshing pending timeframes)
+  const updateTweetPrice = useCallback(async (tweetId: string, timestamp: number) => {
+    const priceData = await fetchMultiTimeframePrices(timestamp);
+    setTweets(prevTweets => 
+      prevTweets.map(tweet => 
+        tweet.id === tweetId 
+          ? { ...tweet, ...priceData }
+          : tweet
+      )
+    );
+  }, [fetchMultiTimeframePrices]);
+
+  useEffect(() => {
+    async function fetchTweetsWithPrices() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        console.log("Fetching tweets from API...");
+        
+        // Fetch tweets
+        const tweetsRes = await fetch("/api/tweets");
+        if (!tweetsRes.ok) {
+          throw new Error(`Failed to fetch tweets: ${tweetsRes.status}`);
+        }
+        const tweetsData = await tweetsRes.json();
+
+        console.log("Tweets API response:", tweetsData);
+
+        if (tweetsData.error && (!tweetsData.tweets || tweetsData.tweets.length === 0)) {
+          throw new Error(tweetsData.error);
+        }
+
+        const rawTweets = tweetsData.tweets || [];
+        console.log(`Received ${rawTweets.length} tweets`);
+        
+        // Track if we're using demo data
+        if (tweetsData.isDemo) {
+          setIsDemo(true);
+        }
+        if (tweetsData.source) {
+          setSource(tweetsData.source);
+        }
+        
+        if (rawTweets.length === 0) {
+          setTweets([]);
+          setLoading(false);
+          return;
+        }
+
+        const now = Date.now();
+
+        // Initialize tweets without price data first (show UI immediately)
+        const initialTweets: TweetWithPrice[] = rawTweets.map(
+          (tweet: { id: string; text: string; createdAt: string; timestamp: number; url?: string }) => ({
+            ...tweet,
+            priceAtT: null,
+            timeframes: { ...EMPTY_TIMEFRAMES },
+            impactScore: 0,
+            impactDirection: "neutral" as const,
+          })
+        );
+        setTweets(initialTweets);
+        setLoading(false);
+
+        // Fetch price data sequentially with throttling to avoid rate limits
+        for (let i = 0; i < rawTweets.length; i++) {
+          const tweet = rawTweets[i];
+          
+          // Skip if timestamp is invalid (0 or in the future)
+          if (!tweet.timestamp || tweet.timestamp <= 0 || tweet.timestamp > now) {
+            console.log(`Skipping tweet ${tweet.id}: invalid timestamp ${tweet.timestamp}`);
+            continue;
+          }
+          
+          try {
+            console.log(`Fetching multi-timeframe prices for tweet ${i + 1}/${rawTweets.length}, timestamp: ${new Date(tweet.timestamp).toISOString()}`);
+            
+            const priceRes = await fetch(`/api/price-history?timestamp=${tweet.timestamp}&multi=true`);
+            const priceData = await priceRes.json();
+
+            console.log(`Multi-timeframe data for tweet ${tweet.id}:`, priceData);
+
+            // Update this specific tweet with price data
+            setTweets(prevTweets =>
+              prevTweets.map(t =>
+                t.id === tweet.id
+                  ? {
+                      ...t,
+                      priceAtT: priceData.priceAtT,
+                      timeframes: priceData.timeframes || EMPTY_TIMEFRAMES,
+                      impactScore: priceData.impactScore || 0,
+                      impactDirection: priceData.impactDirection || "neutral",
+                    }
+                  : t
+              )
+            );
+
+            // Throttle: wait before next request
+            if (i < rawTweets.length - 1) {
+              await delay(PRICE_FETCH_DELAY_MS);
+            }
+          } catch (err) {
+            console.error(`Failed to fetch price for tweet ${tweet.id}:`, err);
+          }
+        }
+        
+        console.log("Finished fetching all multi-timeframe prices");
+      } catch (err) {
+        console.error("Error in fetchTweetsWithPrices:", err);
+        setError(err instanceof Error ? err.message : "Unknown error");
+        setLoading(false);
+      }
+    }
+
+    fetchTweetsWithPrices();
+  }, []);
+
+  return { tweets, loading, error, updateTweetPrice, isDemo, source };
+}
+
 // ========== Components ==========
 
 interface DigitColumnProps {
@@ -516,6 +708,413 @@ function PriceGap({ primaryPrice, shadowPrice, primarySource }: PriceGapProps) {
           Wide Spread
         </span>
       )}
+    </div>
+  );
+}
+
+// Tweet Card Component - Bloomberg Terminal Row Style
+// Format: [Timestamp] | [Tweet Text] | [Price At Tweet] → [Price +10m] | [Glow Icon %]
+// Timeframe configuration
+const TIMEFRAMES: { key: TimeframeKey; label: string; threshold: number }[] = [
+  { key: "1m", label: "1M", threshold: 60 * 1000 },
+  { key: "10m", label: "10M", threshold: 10 * 60 * 1000 },
+  { key: "30m", label: "30M", threshold: 30 * 60 * 1000 },
+  { key: "1h", label: "1H", threshold: 60 * 60 * 1000 },
+  { key: "1d", label: "1D", threshold: 24 * 60 * 60 * 1000 },
+];
+
+// Price Change Cell Component
+function PriceChangeCell({ data, hasPendingData }: { data: TimeframeData; hasPendingData: boolean }) {
+  if (data.pending) {
+    return (
+      <div className="flex items-center justify-center gap-1">
+        <motion.div
+          className="w-1.5 h-1.5 bg-amber-500 rounded-full"
+          animate={{ opacity: [0.3, 1, 0.3] }}
+          transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <span className="text-amber-500/60 text-[9px]">PEND</span>
+      </div>
+    );
+  }
+
+  if (data.change === null) {
+    return <span className="text-neutral-600">—</span>;
+  }
+
+  const isPositive = data.change > 0;
+  const isNegative = data.change < 0;
+  const magnitude = Math.abs(data.change);
+  
+  // Dynamic glow intensity based on magnitude
+  const glowIntensity = Math.min(magnitude * 0.3, 1);
+  
+  const getStyle = (): React.CSSProperties => {
+    if (isPositive) {
+      return {
+        color: '#34d399',
+        textShadow: `0 0 ${4 + glowIntensity * 8}px rgba(52, 211, 153, ${0.4 + glowIntensity * 0.4})`,
+      };
+    }
+    if (isNegative) {
+      return {
+        color: '#ef4444',
+        textShadow: `0 0 ${4 + glowIntensity * 8}px rgba(239, 68, 68, ${0.4 + glowIntensity * 0.4})`,
+      };
+    }
+    return { color: '#737373' };
+  };
+
+  return (
+    <span 
+      className="font-bold tabular-nums text-[11px]"
+      style={getStyle()}
+    >
+      {isPositive ? '▲' : isNegative ? '▼' : '●'}
+      {isPositive ? '+' : ''}{data.change.toFixed(2)}%
+    </span>
+  );
+}
+
+interface TweetRowProps {
+  tweet: TweetWithPrice;
+  onRefresh?: (tweetId: string, timestamp: number) => void;
+}
+
+function TweetRow({ tweet, onRefresh }: TweetRowProps) {
+  // Format timestamp as HH:MM
+  const formattedTime = useMemo(() => {
+    const date = new Date(tweet.createdAt);
+    return date.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }, [tweet.createdAt]);
+
+  // Format date as MM/DD
+  const formattedDate = useMemo(() => {
+    const date = new Date(tweet.createdAt);
+    return `${(date.getMonth() + 1).toString().padStart(2, '0')}/${date.getDate().toString().padStart(2, '0')}`;
+  }, [tweet.createdAt]);
+
+  // Check if any timeframes are still pending
+  const hasPendingData = useMemo(() => {
+    return Object.values(tweet.timeframes).some(tf => tf.pending);
+  }, [tweet.timeframes]);
+
+  // Calculate row highlight based on impact
+  const rowStyle = useMemo((): React.CSSProperties => {
+    const { impactScore, impactDirection } = tweet;
+    
+    if (impactDirection === "neutral" || impactScore < 0.1) {
+      return {};
+    }
+
+    // Scale opacity based on impact score (0.1 to 2.0+ range)
+    const opacity = Math.min(impactScore * 0.15, 0.3);
+    
+    if (impactDirection === "positive") {
+      return {
+        background: `linear-gradient(90deg, rgba(52, 211, 153, ${opacity}) 0%, rgba(52, 211, 153, ${opacity * 0.3}) 100%)`,
+        boxShadow: impactScore > 1 ? `inset 0 0 20px rgba(52, 211, 153, ${opacity * 0.5})` : undefined,
+      };
+    }
+    
+    if (impactDirection === "negative") {
+      return {
+        background: `linear-gradient(90deg, rgba(239, 68, 68, ${opacity}) 0%, rgba(239, 68, 68, ${opacity * 0.3}) 100%)`,
+        boxShadow: impactScore > 1 ? `inset 0 0 20px rgba(239, 68, 68, ${opacity * 0.5})` : undefined,
+      };
+    }
+    
+    return {};
+  }, [tweet.impactScore, tweet.impactDirection]);
+
+  // Truncate tweet text
+  const truncatedText = useMemo(() => {
+    const maxLength = 80;
+    if (tweet.text.length <= maxLength) return tweet.text;
+    return tweet.text.slice(0, maxLength) + '...';
+  }, [tweet.text]);
+
+  // Build tweet URL
+  const tweetUrl = tweet.url || (tweet.id ? `https://x.com/DeItaone/status/${tweet.id}` : null);
+
+  return (
+    <motion.tr
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="border-b border-neutral-800/50 hover:bg-white/[0.02] transition-all duration-200"
+      style={rowStyle}
+    >
+      {/* Timestamp Cell */}
+      <td className="py-2 px-2 border-r border-neutral-800/30">
+        <div className="flex flex-col">
+          <span className="text-amber-500 text-[10px] font-bold tabular-nums">{formattedTime}</span>
+          <span className="text-neutral-600 text-[9px] tabular-nums">{formattedDate}</span>
+        </div>
+      </td>
+
+      {/* Tweet Headline Cell */}
+      <td className="py-2 px-2 border-r border-neutral-800/30 max-w-[280px]">
+        {tweetUrl ? (
+          <a 
+            href={tweetUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-white text-[10px] leading-tight font-mono hover:text-amber-400 transition-colors cursor-pointer block"
+            title={tweet.text}
+          >
+            {truncatedText}
+          </a>
+        ) : (
+          <span 
+            className="text-white text-[10px] leading-tight font-mono block"
+            title={tweet.text}
+          >
+            {truncatedText}
+          </span>
+        )}
+      </td>
+
+      {/* Price at T Cell */}
+      <td className="py-2 px-2 border-r border-neutral-800/30 text-center">
+        {tweet.priceAtT !== null ? (
+          <span className="text-neutral-400 text-[10px] tabular-nums font-mono">
+            ${tweet.priceAtT.toFixed(0)}
+          </span>
+        ) : (
+          <span className="text-neutral-600 text-[10px]">—</span>
+        )}
+      </td>
+
+      {/* Timeframe Cells */}
+      {TIMEFRAMES.map(({ key }) => (
+        <td key={key} className="py-2 px-1.5 border-r border-neutral-800/30 text-center min-w-[65px]">
+          <PriceChangeCell data={tweet.timeframes[key]} hasPendingData={hasPendingData} />
+        </td>
+      ))}
+
+      {/* Impact Score Cell */}
+      <td className="py-2 px-2 text-center">
+        {tweet.impactScore > 0 ? (
+          <div className="flex items-center justify-center gap-1">
+            <span 
+              className={`text-[10px] font-bold tabular-nums ${
+                tweet.impactDirection === "positive" ? "text-emerald-400" :
+                tweet.impactDirection === "negative" ? "text-red-400" :
+                "text-neutral-500"
+              }`}
+              style={{
+                textShadow: tweet.impactScore > 0.5 
+                  ? `0 0 8px ${tweet.impactDirection === "positive" ? "rgba(52, 211, 153, 0.5)" : "rgba(239, 68, 68, 0.5)"}`
+                  : undefined
+              }}
+            >
+              {tweet.impactScore.toFixed(1)}
+            </span>
+            {hasPendingData && (
+              <motion.div
+                className="w-1 h-1 bg-amber-500 rounded-full"
+                animate={{ opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 1, repeat: Infinity }}
+              />
+            )}
+          </div>
+        ) : hasPendingData ? (
+          <motion.div
+            className="flex items-center justify-center gap-0.5"
+            animate={{ opacity: [0.5, 1, 0.5] }}
+            transition={{ duration: 1.5, repeat: Infinity }}
+          >
+            <span className="text-amber-500/60 text-[9px]">CALC</span>
+          </motion.div>
+        ) : (
+          <span className="text-neutral-600 text-[10px]">—</span>
+        )}
+      </td>
+    </motion.tr>
+  );
+}
+
+// News Sentiment Feed Component - Bloomberg Terminal Style with Multi-Timeframe Table
+function NewsSentimentFeed() {
+  const { tweets, loading, error, updateTweetPrice, isDemo, source } = useNewsFeed();
+
+  // Bloomberg-style title bar
+  const TitleBar = () => (
+    <div className="flex items-center justify-between py-2 px-3 border-b border-neutral-700 bg-neutral-900/30">
+      <div className="flex items-center gap-3">
+        <span className="text-amber-500 font-bold text-sm tracking-wider">NEWS ALPHA</span>
+        <span className="text-white font-bold text-sm">@DELTAONE</span>
+        {isDemo && (
+          <span className="px-1.5 py-0.5 bg-yellow-500/20 text-yellow-400 text-[9px] font-bold rounded border border-yellow-500/30">
+            DEMO
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-3">
+        <span className="text-neutral-500 text-xs uppercase">ETH/USD</span>
+        <span className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 text-[10px] font-bold rounded border border-cyan-500/30">
+          MULTI-TF ANALYSIS
+        </span>
+      </div>
+    </div>
+  );
+
+  // Loading skeleton
+  if (loading) {
+    return (
+      <div className="w-full max-w-6xl mx-auto px-4">
+        <div className="bg-black border border-neutral-800">
+          <TitleBar />
+          <div className="p-4">
+            {[...Array(5)].map((_, i) => (
+              <div key={i} className="flex items-center gap-2 py-3 border-b border-neutral-800/30">
+                <div className="w-16 h-8 bg-neutral-800/50 rounded animate-pulse" />
+                <div className="flex-1 h-6 bg-neutral-800/50 rounded animate-pulse" />
+                {[...Array(7)].map((_, j) => (
+                  <div key={j} className="w-14 h-6 bg-neutral-800/50 rounded animate-pulse" />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className="w-full max-w-6xl mx-auto px-4">
+        <div className="bg-black border border-neutral-800">
+          <TitleBar />
+          <div className="py-8 px-3 text-center">
+            <div className="text-red-500 text-sm font-bold mb-2">
+              ■ ERROR: FEED UNAVAILABLE
+            </div>
+            <p className="text-neutral-500 text-xs font-mono">{error}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Empty state
+  if (tweets.length === 0) {
+    return (
+      <div className="w-full max-w-6xl mx-auto px-4">
+        <div className="bg-black border border-neutral-800">
+          <TitleBar />
+          <div className="py-8 px-3 text-center">
+            <p className="text-neutral-500 text-sm font-mono">NO DATA AVAILABLE</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full max-w-6xl mx-auto px-4">
+      <div className="bg-black border border-neutral-800">
+        <TitleBar />
+        
+        {/* Data Table */}
+        <div className="overflow-x-auto max-h-[55vh] overflow-y-auto scrollbar-thin">
+          <table className="w-full border-collapse font-mono text-xs">
+            {/* Table Header */}
+            <thead className="sticky top-0 z-10 bg-neutral-900 border-b border-neutral-700">
+              <tr>
+                <th className="py-2 px-2 text-left text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 w-[60px]">
+                  TIME
+                </th>
+                <th className="py-2 px-2 text-left text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 min-w-[200px]">
+                  HEADLINE
+                </th>
+                <th className="py-2 px-2 text-center text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 w-[60px]">
+                  PRICE@T
+                </th>
+                {TIMEFRAMES.map(({ key, label }) => (
+                  <th 
+                    key={key} 
+                    className="py-2 px-1.5 text-center text-[9px] text-amber-500/80 uppercase tracking-wider border-r border-neutral-800/30 w-[65px]"
+                  >
+                    Δ{label}
+                  </th>
+                ))}
+                <th className="py-2 px-2 text-center text-[9px] text-cyan-500/80 uppercase tracking-wider w-[50px]">
+                  SCORE
+                </th>
+              </tr>
+            </thead>
+            
+            {/* Table Body */}
+            <tbody>
+              {tweets.map((tweet) => (
+                <TweetRow key={tweet.id} tweet={tweet} onRefresh={updateTweetPrice} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* Bloomberg-style footer */}
+        <div className="border-t border-neutral-700 py-2 px-3 flex items-center justify-between bg-neutral-900/50">
+          <div className="flex items-center gap-4">
+            <span className="text-neutral-500 text-[10px] font-mono uppercase">
+              {tweets.length} Headlines
+            </span>
+            <span className="text-neutral-700 text-[10px]">|</span>
+            <span className="text-neutral-600 text-[10px] font-mono">
+              {source || "BINANCE KLINES"}
+            </span>
+            <span className="text-neutral-700 text-[10px]">|</span>
+            <span className="text-neutral-500 text-[9px] font-mono">
+              1M • 10M • 30M • 1H • 1D
+            </span>
+          </div>
+          <div className="flex items-center gap-4">
+            {/* Legend */}
+            <div className="flex items-center gap-3 text-[9px]">
+              <span className="flex items-center gap-1">
+                <span className="text-emerald-400">▲</span>
+                <span className="text-neutral-600">UP</span>
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="text-red-400">▼</span>
+                <span className="text-neutral-600">DOWN</span>
+              </span>
+              <span className="flex items-center gap-1">
+                <motion.div 
+                  className="w-1.5 h-1.5 bg-amber-500 rounded-full"
+                  animate={{ opacity: [0.3, 1, 0.3] }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                />
+                <span className="text-neutral-600">PENDING</span>
+              </span>
+            </div>
+            <span className="text-neutral-700">|</span>
+            <div className="flex items-center gap-2">
+              {isDemo ? (
+                <>
+                  <span className="w-1.5 h-1.5 bg-yellow-500 rounded-full" />
+                  <span className="text-yellow-500/80 text-[10px] font-mono uppercase">
+                    Demo
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                  <span className="text-emerald-500/80 text-[10px] font-mono uppercase">
+                    Live
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -860,7 +1459,7 @@ export default function Home() {
   };
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-black">
+    <main className="min-h-screen bg-black overflow-x-hidden">
       {/* Motion blur and gap alert styles */}
       <style jsx global>{`
         .motion-blur-active {
@@ -888,9 +1487,27 @@ export default function Home() {
         .animate-pulse-yellow {
           animation: pulse-yellow 1s ease-in-out infinite;
         }
+
+        .scrollbar-thin::-webkit-scrollbar {
+          width: 4px;
+        }
+
+        .scrollbar-thin::-webkit-scrollbar-track {
+          background: rgba(255, 255, 255, 0.05);
+          border-radius: 2px;
+        }
+
+        .scrollbar-thin::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 2px;
+        }
+
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.2);
+        }
       `}</style>
 
-      {/* Top Bar */}
+      {/* Top Bar - Fixed */}
       <div className="fixed top-6 left-0 right-0 px-6 flex items-center justify-between z-20">
         {/* Source Selector */}
         <SourceSelector source={source} onSourceChange={setSource} />
@@ -931,62 +1548,68 @@ export default function Home() {
         }}
       />
       
-      {/* Content */}
-      <div className="relative z-10 flex flex-col items-center gap-8">
-        {/* ETH Label with Source Badge */}
-        <div className="flex items-center gap-3">
-          <span className="text-white/40 text-sm tracking-[0.3em] uppercase">
-            ETH / USD
-          </span>
-          <SourceBadge source={source} />
-        </div>
+      {/* Main Content - Scrollable */}
+      <div className="relative z-10 pt-24 pb-32">
+        {/* Price Ticker Section */}
+        <div className="flex flex-col items-center gap-8 mb-16">
+          {/* ETH Label with Source Badge */}
+          <div className="flex items-center gap-3">
+            <span className="text-white/40 text-sm tracking-[0.3em] uppercase">
+              ETH / USD
+            </span>
+            <SourceBadge source={source} />
+          </div>
 
-        {/* Price Display with Digit Roller */}
-        <div className={`flex items-center gap-2 text-7xl md:text-9xl ${isSliding ? 'motion-blur-container' : ''}`}>
-          {/* Static $ sign */}
-          <span 
-            className="text-white/30 text-4xl md:text-6xl font-medium tabular-nums"
-            style={{ lineHeight: `${DIGIT_HEIGHT}em` }}
-          >
-            $
-          </span>
-          
-          {/* Digit Roller */}
-          {formattedPrice ? (
-            <DigitRoller
-              value={formattedPrice}
-              colorClass={getPriceColorClass()}
-              moveSize={moveSize}
-              priceDirection={priceDirection}
-            />
-          ) : (
+          {/* Price Display with Digit Roller */}
+          <div className={`flex items-center gap-2 text-7xl md:text-9xl ${isSliding ? 'motion-blur-container' : ''}`}>
+            {/* Static $ sign */}
             <span 
-              className="text-white/20 animate-pulse-slow font-bold tracking-tight tabular-nums"
+              className="text-white/30 text-4xl md:text-6xl font-medium tabular-nums"
               style={{ lineHeight: `${DIGIT_HEIGHT}em` }}
             >
-              0,000.00
+              $
             </span>
-          )}
+            
+            {/* Digit Roller */}
+            {formattedPrice ? (
+              <DigitRoller
+                value={formattedPrice}
+                colorClass={getPriceColorClass()}
+                moveSize={moveSize}
+                priceDirection={priceDirection}
+              />
+            ) : (
+              <span 
+                className="text-white/20 animate-pulse-slow font-bold tracking-tight tabular-nums"
+                style={{ lineHeight: `${DIGIT_HEIGHT}em` }}
+              >
+                0,000.00
+              </span>
+            )}
+          </div>
+
+          {/* Status + Price Gap */}
+          <div className="flex flex-col items-center gap-3">
+            <div className="text-white/20 text-xs tracking-widest uppercase">
+              {status === "connected" && "Live"}
+              {status === "connecting" && "Connecting..."}
+              {status === "disconnected" && "Reconnecting..."}
+            </div>
+            <PriceGap 
+              primaryPrice={primaryPrice} 
+              shadowPrice={shadowPrice} 
+              primarySource={source} 
+            />
+          </div>
         </div>
 
-        {/* Status */}
-        <div className="text-white/20 text-xs tracking-widest uppercase">
-          {status === "connected" && "Live"}
-          {status === "connecting" && "Connecting..."}
-          {status === "disconnected" && "Reconnecting..."}
-        </div>
+        {/* News Sentiment Feed Section */}
+        <NewsSentimentFeed />
       </div>
 
-      {/* Bottom section - Price Gap */}
-      <div className="fixed bottom-6 flex flex-col items-center gap-2">
-        <PriceGap 
-          primaryPrice={primaryPrice} 
-          shadowPrice={shadowPrice} 
-          primarySource={source} 
-        />
-        <div className="text-white/10 text-xs tracking-widest uppercase">
-          {source === "hyperliquid" ? "Hyperliquid" : "Binance"}
-        </div>
+      {/* Bottom attribution - Fixed */}
+      <div className="fixed bottom-6 left-0 right-0 text-center text-white/10 text-xs tracking-widest uppercase">
+        {source === "hyperliquid" ? "Hyperliquid" : "Binance"}
       </div>
     </main>
   );
