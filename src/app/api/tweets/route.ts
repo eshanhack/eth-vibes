@@ -50,90 +50,96 @@ function generateDemoTweets() {
   });
 }
 
-// Twitter scrapers that work WITHOUT login (post June 2023)
-// Based on Apify's recommendation in their error message
+// Twitter/X scrapers - trying multiple approaches
 const TWITTER_SCRAPERS = [
-  // Tweet Flash - recommended by Apify for no-login scraping
+  // Twitter Scraper V2 by API Dojo - highly rated
   {
-    id: "shanes~tweet-flash",
-    name: "Tweet Flash (No Login)",
+    id: "apidojo/twitter-scraper-v2",
+    name: "API Dojo Twitter Scraper V2",
+    buildInput: () => ({
+      startUrls: [`https://twitter.com/${TARGET_USER}`],
+      maxItems: 20,
+      sort: "Latest",
+      tweetLanguage: "en",
+    }),
+  },
+  // X (Twitter) Scraper by Kaito - works with X.com
+  {
+    id: "kaitoeasyapi/twitter-x-data-scraper", 
+    name: "Kaito X Data Scraper",
+    buildInput: () => ({
+      twitterHandles: [TARGET_USER],
+      maxTweets: 20,
+    }),
+  },
+  // Reliable Twitter Data Scraper
+  {
+    id: "reliable_scraper/twitter-data-scraper",
+    name: "Reliable Twitter Scraper",
+    buildInput: () => ({
+      handles: [TARGET_USER],
+      tweetsDesired: 20,
+    }),
+  },
+  // Tweet Flash
+  {
+    id: "shanes/tweet-flash",
+    name: "Tweet Flash",
     buildInput: () => ({
       searchTerms: [`from:${TARGET_USER}`],
       maxTweets: 20,
       sort: "Latest",
     }),
   },
-  // Alternative input format for Tweet Flash
+  // Twitter Scraper Lite
   {
-    id: "shanes~tweet-flash",
-    name: "Tweet Flash (handle)",
+    id: "quacker/twitter-scraper",
+    name: "Quacker Twitter Scraper",
     buildInput: () => ({
       handles: [TARGET_USER],
       maxTweets: 20,
+      mode: "user",
     }),
   },
-  // Easy Twitter Search Scraper - also recommended for no-login
+  // X Scraper by Apify
   {
-    id: "web.harvester~easy-twitter-search-scraper",
-    name: "Easy Twitter Search Scraper",
+    id: "apify/twitter-scraper",
+    name: "Official Apify Twitter Scraper",
     buildInput: () => ({
-      searchQuery: `from:${TARGET_USER}`,
-      maxTweets: 20,
-      sortBy: "Latest",
-    }),
-  },
-  // Rapid Twitter Scraper
-  {
-    id: "curious_coder~twitter-scraper",
-    name: "Curious Coder Twitter Scraper",
-    buildInput: () => ({
-      searchTerms: [`from:${TARGET_USER}`],
+      handle: [TARGET_USER],
+      mode: "profile",
       maxItems: 20,
-    }),
-  },
-  // Tweet Scraper V2
-  {
-    id: "heymoon~tweet-scraper-v2",
-    name: "Tweet Scraper V2",
-    buildInput: () => ({
-      searchQueries: [`from:${TARGET_USER}`],
-      maxTweets: 20,
-      sortType: "Latest",
-    }),
-  },
-  // Nitter-based scraper (Nitter is a Twitter frontend that might still work)
-  {
-    id: "pocesar~nitter-scraper",
-    name: "Nitter Scraper",
-    buildInput: () => ({
-      usernames: [TARGET_USER],
-      maxTweets: 20,
     }),
   },
 ];
 
 async function tryFetchWithActor(actorConfig: typeof TWITTER_SCRAPERS[0]): Promise<Record<string, unknown>[] | null> {
-  const apiUrl = `https://api.apify.com/v2/acts/${actorConfig.id}/run-sync-get-dataset-items?token=${APIFY_TOKEN}&timeout=120`;
+  const apiUrl = `https://api.apify.com/v2/acts/${actorConfig.id}/run-sync-get-dataset-items?token=${APIFY_TOKEN}&timeout=60`;
   const input = actorConfig.buildInput();
 
   console.log(`\n=== Trying: ${actorConfig.name} ===`);
   console.log("Actor ID:", actorConfig.id);
-  console.log("Input:", JSON.stringify(input, null, 2));
+  console.log("Input:", JSON.stringify(input));
 
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 55000); // 55s timeout
+    
     const response = await fetch(apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(input),
+      signal: controller.signal,
     });
 
+    clearTimeout(timeoutId);
     console.log("Response status:", response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Failed with status ${response.status}:`, errorText.substring(0, 500));
+      console.error(`Failed with status ${response.status}:`, errorText.substring(0, 300));
       return null;
     }
 
@@ -141,16 +147,18 @@ async function tryFetchWithActor(actorConfig: typeof TWITTER_SCRAPERS[0]): Promi
     console.log(`Returned ${Array.isArray(items) ? items.length : 0} items`);
     
     if (Array.isArray(items) && items.length > 0) {
-      // Log first item structure for debugging
       console.log("First item keys:", Object.keys(items[0]));
-      console.log("First item sample:", JSON.stringify(items[0]).substring(0, 500));
       return items;
     }
     
-    console.log("No items returned");
+    console.log("No items returned or empty array");
     return null;
   } catch (error) {
-    console.error(`Error:`, error);
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.error("Request timed out after 55s");
+    } else {
+      console.error(`Error:`, error);
+    }
     return null;
   }
 }
