@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 
 // X API Bearer Token - set in environment variable
-const X_BEARER_TOKEN = process.env.X_BEARER_TOKEN || "";
-const TARGET_USERNAME = "DeItaone"; // Note: it's DeItaone with an "I" not "l"
+// Decode URL-encoded tokens if needed
+const rawToken = process.env.X_BEARER_TOKEN || "";
+const X_BEARER_TOKEN = decodeURIComponent(rawToken);
+const TARGET_USERNAME = "DeItaone"; // Financial news account (capital D, capital I, not L)
 
 // Demo tweets fallback
 function generateDemoTweets() {
@@ -46,9 +48,16 @@ function generateDemoTweets() {
   });
 }
 
+// Store last error for debugging
+let lastApiError: string | null = null;
+
 // Fetch user ID from username
 async function getUserId(username: string): Promise<string | null> {
   const url = `https://api.twitter.com/2/users/by/username/${username}`;
+  
+  console.log("Fetching user ID from:", url);
+  console.log("Token length:", X_BEARER_TOKEN.length);
+  console.log("Token starts with:", X_BEARER_TOKEN.substring(0, 20) + "...");
   
   try {
     const response = await fetch(url, {
@@ -57,21 +66,29 @@ async function getUserId(username: string): Promise<string | null> {
       },
     });
 
+    const responseText = await response.text();
+    console.log(`User lookup response (${response.status}):`, responseText);
+
     if (!response.ok) {
-      const errorData = await response.text();
-      console.error(`Failed to get user ID: ${response.status}`, errorData);
+      lastApiError = `Status ${response.status}: ${responseText}`;
+      console.error("Failed to get user ID:", lastApiError);
       return null;
     }
 
-    const data = await response.json();
-    console.log("User lookup response:", data);
+    const data = JSON.parse(responseText);
     
     if (data.data?.id) {
       return data.data.id;
     }
     
+    if (data.errors) {
+      lastApiError = JSON.stringify(data.errors);
+      console.error("API returned errors:", data.errors);
+    }
+    
     return null;
   } catch (error) {
+    lastApiError = String(error);
     console.error("Error fetching user ID:", error);
     return null;
   }
@@ -165,7 +182,13 @@ export async function GET() {
         tweets: demoTweets,
         source: "Demo Data (User lookup failed)",
         count: demoTweets.length,
-        isDemo: true
+        isDemo: true,
+        debug: {
+          username: TARGET_USERNAME,
+          tokenConfigured: X_BEARER_TOKEN.length > 0,
+          tokenLength: X_BEARER_TOKEN.length,
+          apiError: lastApiError,
+        }
       });
     }
     
