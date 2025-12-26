@@ -6,6 +6,15 @@ const rawToken = process.env.X_BEARER_TOKEN || "";
 const X_BEARER_TOKEN = decodeURIComponent(rawToken);
 const TARGET_USERNAME = "DeItaone"; // Financial news account (capital D, capital I, not L)
 
+// Cache configuration - cache tweets for 5 minutes to avoid rate limits
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+interface CachedData {
+  tweets: ReturnType<typeof generateDemoTweets>;
+  timestamp: number;
+  source: string;
+}
+let cachedTweets: CachedData | null = null;
+
 // Demo tweets fallback
 function generateDemoTweets() {
   const now = Date.now();
@@ -158,6 +167,19 @@ export async function GET() {
   console.log("Using Official X API v2");
   console.log("========================================");
   
+  // Check cache first to avoid rate limits
+  if (cachedTweets && (Date.now() - cachedTweets.timestamp) < CACHE_DURATION_MS) {
+    console.log("Returning cached tweets (age: " + Math.round((Date.now() - cachedTweets.timestamp) / 1000) + "s)");
+    return NextResponse.json({
+      tweets: cachedTweets.tweets,
+      source: cachedTweets.source + " (cached)",
+      count: cachedTweets.tweets.length,
+      isDemo: false,
+      cached: true,
+      cacheAge: Math.round((Date.now() - cachedTweets.timestamp) / 1000),
+    });
+  }
+  
   // Check for bearer token
   if (!X_BEARER_TOKEN) {
     console.log("No X_BEARER_TOKEN set - returning demo data");
@@ -219,6 +241,14 @@ export async function GET() {
         createdAt: tweets[0].createdAt,
       });
     }
+
+    // Cache the results
+    cachedTweets = {
+      tweets,
+      timestamp: Date.now(),
+      source: "X API v2 (Official)",
+    };
+    console.log("Cached tweets for 5 minutes");
 
     return NextResponse.json({
       tweets,
