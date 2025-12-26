@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { motion } from "framer-motion";
+import { motion, LayoutGroup } from "framer-motion";
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 type Direction = "up" | "down";
@@ -699,7 +699,7 @@ function SourceSelector({ source, onSourceChange }: SourceSelectorProps) {
       >
         Binance
       </button>
-    </div>
+        </div>
   );
 }
 
@@ -919,8 +919,10 @@ function TweetRow({ tweet, onRefresh }: TweetRowProps) {
 
   return (
     <motion.tr
+      layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
+      transition={{ layout: { type: "spring", stiffness: 300, damping: 30 } }}
       className="border-b border-neutral-800/50 hover:bg-white/[0.02] transition-all duration-200"
       style={rowStyle}
     >
@@ -997,7 +999,7 @@ function TweetRow({ tweet, onRefresh }: TweetRowProps) {
                 transition={{ duration: 1, repeat: Infinity }}
               />
             )}
-          </div>
+        </div>
         ) : hasPendingData ? (
           <motion.div
             className="flex items-center justify-center gap-0.5"
@@ -1014,9 +1016,54 @@ function TweetRow({ tweet, onRefresh }: TweetRowProps) {
   );
 }
 
+// Sort configuration type
+interface SortConfig {
+  column: TimeframeKey | null;
+  direction: "desc" | "asc";
+}
+
 // News Sentiment Feed Component - Bloomberg Terminal Style with Multi-Timeframe Table
 function NewsSentimentFeed() {
   const { tweets, loading, error, updateTweetPrice, isDemo, source } = useNewsFeed();
+  
+  // Sort state - default to 10m, highest to lowest (desc)
+  const [sortConfig, setSortConfig] = useState<SortConfig>({
+    column: "10m",
+    direction: "desc",
+  });
+
+  // Handle column header click to toggle sorting
+  const handleSort = useCallback((column: TimeframeKey) => {
+    setSortConfig(prev => {
+      if (prev.column === column) {
+        // Toggle direction if same column
+        return { column, direction: prev.direction === "desc" ? "asc" : "desc" };
+      }
+      // New column, start with desc (highest first)
+      return { column, direction: "desc" };
+    });
+  }, []);
+
+  // Sort tweets based on current sort config
+  const sortedTweets = useMemo(() => {
+    if (!sortConfig.column) return tweets;
+    
+    return [...tweets].sort((a, b) => {
+      const aChange = a.timeframes[sortConfig.column!]?.change;
+      const bChange = b.timeframes[sortConfig.column!]?.change;
+      
+      // Handle null/undefined values - push them to the end
+      if (aChange === null || aChange === undefined) return 1;
+      if (bChange === null || bChange === undefined) return -1;
+      
+      // Sort based on direction
+      if (sortConfig.direction === "desc") {
+        return bChange - aChange; // Highest first
+      } else {
+        return aChange - bChange; // Lowest first
+      }
+    });
+  }, [tweets, sortConfig]);
 
   // Bloomberg-style title bar
   const TitleBar = () => (
@@ -1057,7 +1104,7 @@ function NewsSentimentFeed() {
             ))}
           </div>
         </div>
-      </div>
+    </div>
     );
   }
 
@@ -1099,40 +1146,54 @@ function NewsSentimentFeed() {
         
         {/* Data Table */}
         <div className="overflow-x-auto max-h-[55vh] overflow-y-auto scrollbar-thin">
-          <table className="w-full border-collapse font-mono text-xs">
-            {/* Table Header */}
-            <thead className="sticky top-0 z-10 bg-neutral-900 border-b border-neutral-700">
-              <tr>
-                <th className="py-2 px-2 text-left text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 w-[60px]">
-                  TIME
-                </th>
-                <th className="py-2 px-2 text-left text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 min-w-[200px]">
-                  HEADLINE
-                </th>
-                <th className="py-2 px-2 text-center text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 w-[60px]">
-                  PRICE@T
-                </th>
-                {TIMEFRAMES.map(({ key, label }) => (
-                  <th 
-                    key={key} 
-                    className="py-2 px-1.5 text-center text-[9px] text-amber-500/80 uppercase tracking-wider border-r border-neutral-800/30 w-[65px]"
-                  >
-                    Δ{label}
+          <LayoutGroup>
+            <table className="w-full border-collapse font-mono text-xs">
+              {/* Table Header */}
+              <thead className="sticky top-0 z-10 bg-neutral-900 border-b border-neutral-700">
+                <tr>
+                  <th className="py-2 px-2 text-left text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 w-[60px]">
+                    TIME
                   </th>
+                  <th className="py-2 px-2 text-left text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 min-w-[200px]">
+                    HEADLINE
+                  </th>
+                  <th className="py-2 px-2 text-center text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 w-[60px]">
+                    PRICE@T
+                  </th>
+                  {TIMEFRAMES.map(({ key, label }) => (
+                    <th 
+                      key={key} 
+                      className="py-2 px-1.5 text-center text-[9px] uppercase tracking-wider border-r border-neutral-800/30 w-[65px]"
+                    >
+                      <button
+                        onClick={() => handleSort(key)}
+                        className={`flex items-center justify-center gap-0.5 w-full transition-colors hover:text-amber-400 cursor-pointer ${
+                          sortConfig.column === key ? "text-amber-400" : "text-amber-500/80"
+                        }`}
+                      >
+                        <span>Δ{label}</span>
+                        {sortConfig.column === key && (
+                          <span className="text-[8px]">
+                            {sortConfig.direction === "desc" ? "▼" : "▲"}
+                          </span>
+                        )}
+                      </button>
+                    </th>
+                  ))}
+                  <th className="py-2 px-2 text-center text-[9px] text-cyan-500/80 uppercase tracking-wider w-[50px]">
+                    SCORE
+                  </th>
+                </tr>
+              </thead>
+              
+              {/* Table Body */}
+              <tbody>
+                {sortedTweets.map((tweet) => (
+                  <TweetRow key={tweet.id} tweet={tweet} onRefresh={updateTweetPrice} />
                 ))}
-                <th className="py-2 px-2 text-center text-[9px] text-cyan-500/80 uppercase tracking-wider w-[50px]">
-                  SCORE
-                </th>
-              </tr>
-            </thead>
-            
-            {/* Table Body */}
-            <tbody>
-              {tweets.map((tweet) => (
-                <TweetRow key={tweet.id} tweet={tweet} onRefresh={updateTweetPrice} />
-              ))}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </LayoutGroup>
         </div>
         
         {/* Bloomberg-style footer */}
