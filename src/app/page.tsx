@@ -1016,9 +1016,10 @@ function TweetRow({ tweet, onRefresh }: TweetRowProps) {
   );
 }
 
-// Sort configuration type
+// Sort configuration type - supports timeframes, time, and score columns
+type SortColumn = TimeframeKey | "time" | "score";
 interface SortConfig {
-  column: TimeframeKey | null;
+  column: SortColumn;
   direction: "desc" | "asc";
 }
 
@@ -1026,9 +1027,9 @@ interface SortConfig {
 function NewsSentimentFeed() {
   const { tweets, loading, error, updateTweetPrice, isDemo, source } = useNewsFeed();
   
-  // Sort state - default to 10m, highest to lowest (desc)
+  // Sort state - default to time, latest to oldest (desc)
   const [sortConfig, setSortConfig] = useState<SortConfig>({
-    column: "10m",
+    column: "time",
     direction: "desc",
   });
   
@@ -1036,13 +1037,13 @@ function NewsSentimentFeed() {
   const [showOnlyHighImpact, setShowOnlyHighImpact] = useState(false);
 
   // Handle column header click to toggle sorting
-  const handleSort = useCallback((column: TimeframeKey) => {
+  const handleSort = useCallback((column: SortColumn) => {
     setSortConfig(prev => {
       if (prev.column === column) {
         // Toggle direction if same column
         return { column, direction: prev.direction === "desc" ? "asc" : "desc" };
       }
-      // New column, start with desc (highest first)
+      // New column, start with desc (highest/latest first)
       return { column, direction: "desc" };
     });
   }, []);
@@ -1069,23 +1070,39 @@ function NewsSentimentFeed() {
     if (!sortConfig.column) return filteredTweets;
     
     return [...filteredTweets].sort((a, b) => {
-      const aChange = a.timeframes[sortConfig.column!]?.change;
-      const bChange = b.timeframes[sortConfig.column!]?.change;
-      
-      // Handle null/undefined values - push them to the end
-      if (aChange === null || aChange === undefined) return 1;
-      if (bChange === null || bChange === undefined) return -1;
-      
-      // Primary sort: by percentage change
       let comparison: number;
-      if (sortConfig.direction === "desc") {
-        comparison = bChange - aChange; // Highest first
+      
+      // Handle different column types
+      if (sortConfig.column === "time") {
+        // Sort by timestamp
+        const aTime = a.timestamp || 0;
+        const bTime = b.timestamp || 0;
+        comparison = sortConfig.direction === "desc" 
+          ? bTime - aTime  // Latest first
+          : aTime - bTime; // Oldest first
+      } else if (sortConfig.column === "score") {
+        // Sort by impact score
+        const aScore = a.impactScore || 0;
+        const bScore = b.impactScore || 0;
+        comparison = sortConfig.direction === "desc"
+          ? bScore - aScore  // Highest first
+          : aScore - bScore; // Lowest first
       } else {
-        comparison = aChange - bChange; // Lowest first
+        // Sort by timeframe percentage change
+        const aChange = a.timeframes[sortConfig.column]?.change;
+        const bChange = b.timeframes[sortConfig.column]?.change;
+        
+        // Handle null/undefined values - push them to the end
+        if (aChange === null || aChange === undefined) return 1;
+        if (bChange === null || bChange === undefined) return -1;
+        
+        comparison = sortConfig.direction === "desc"
+          ? bChange - aChange  // Highest first
+          : aChange - bChange; // Lowest first
       }
       
-      // Secondary sort: if same change, sort by impact score (higher first)
-      if (comparison === 0) {
+      // Secondary sort: if same value, sort by impact score (higher first)
+      if (comparison === 0 && sortConfig.column !== "score") {
         return (b.impactScore || 0) - (a.impactScore || 0);
       }
       
@@ -1195,8 +1212,20 @@ function NewsSentimentFeed() {
               {/* Table Header */}
               <thead className="sticky top-0 z-10 bg-neutral-900 border-b border-neutral-700">
                 <tr>
-                  <th className="py-2 px-2 text-left text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 w-[60px]">
-                    TIME
+                  <th className="py-2 px-2 text-left text-[9px] uppercase tracking-wider border-r border-neutral-800/30 w-[60px]">
+                    <button
+                      onClick={() => handleSort("time")}
+                      className={`flex items-center gap-0.5 transition-colors hover:text-neutral-300 cursor-pointer ${
+                        sortConfig.column === "time" ? "text-neutral-300" : "text-neutral-500"
+                      }`}
+                    >
+                      <span>TIME</span>
+                      {sortConfig.column === "time" && (
+                        <span className="text-[8px]">
+                          {sortConfig.direction === "desc" ? "▼" : "▲"}
+                        </span>
+                      )}
+                    </button>
                   </th>
                   <th className="py-2 px-2 text-left text-[9px] text-neutral-500 uppercase tracking-wider border-r border-neutral-800/30 min-w-[200px]">
                     HEADLINE
@@ -1224,8 +1253,20 @@ function NewsSentimentFeed() {
                       </button>
                     </th>
                   ))}
-                  <th className="py-2 px-2 text-center text-[9px] text-cyan-500/80 uppercase tracking-wider w-[50px]">
-                    SCORE
+                  <th className="py-2 px-2 text-center text-[9px] uppercase tracking-wider w-[50px]">
+                    <button
+                      onClick={() => handleSort("score")}
+                      className={`flex items-center justify-center gap-0.5 w-full transition-colors hover:text-cyan-400 cursor-pointer ${
+                        sortConfig.column === "score" ? "text-cyan-400" : "text-cyan-500/80"
+                      }`}
+                    >
+                      <span>SCORE</span>
+                      {sortConfig.column === "score" && (
+                        <span className="text-[8px]">
+                          {sortConfig.direction === "desc" ? "▼" : "▲"}
+                        </span>
+                      )}
+                    </button>
                   </th>
                 </tr>
               </thead>
