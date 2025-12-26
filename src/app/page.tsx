@@ -292,7 +292,7 @@ function useShadowPrice(source: PriceSource): number | null {
 }
 
 // ========== useNewsFeed Hook ==========
-const PRICE_FETCH_DELAY_MS = 300; // Delay between price fetches to avoid rate limiting
+const PRICE_FETCH_DELAY_MS = 200; // Delay between price fetches to avoid rate limiting
 
 // Helper function to add delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -306,6 +306,106 @@ const EMPTY_TIMEFRAMES: Record<TimeframeKey, TimeframeData> = {
   "1d": { price: null, change: null, pending: true },
 };
 
+// Timeframe configurations for client-side fetching
+const TIMEFRAME_CONFIGS: { key: TimeframeKey; ms: number; interval: string }[] = [
+  { key: "1m", ms: 60 * 1000, interval: "1m" },
+  { key: "10m", ms: 10 * 60 * 1000, interval: "1m" },
+  { key: "30m", ms: 30 * 60 * 1000, interval: "1m" },
+  { key: "1h", ms: 60 * 60 * 1000, interval: "1h" },
+  { key: "1d", ms: 24 * 60 * 60 * 1000, interval: "1d" },
+];
+
+// Client-side function to fetch price from Binance directly
+async function fetchBinancePrice(timestamp: number, interval: string = "1m"): Promise<number | null> {
+  try {
+    const url = `https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=${interval}&startTime=${timestamp}&limit=1`;
+    const response = await fetch(url);
+    
+    if (!response.ok) return null;
+    
+    const data = await response.json();
+    
+    if (Array.isArray(data) && data.length > 0 && Array.isArray(data[0])) {
+      return parseFloat(data[0][4]); // Close price
+    }
+    
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Client-side function to fetch multi-timeframe prices
+async function fetchMultiTimeframePricesClient(timestamp: number): Promise<{
+  priceAtT: number | null;
+  timeframes: Record<TimeframeKey, TimeframeData>;
+  impactScore: number;
+  impactDirection: "positive" | "negative" | "neutral";
+}> {
+  const now = Date.now();
+  
+  // Fetch base price
+  const priceAtT = await fetchBinancePrice(timestamp);
+  
+  if (priceAtT === null) {
+    return {
+      priceAtT: null,
+      timeframes: {
+        "1m": { price: null, change: null, pending: false },
+        "10m": { price: null, change: null, pending: false },
+        "30m": { price: null, change: null, pending: false },
+        "1h": { price: null, change: null, pending: false },
+        "1d": { price: null, change: null, pending: false },
+      },
+      impactScore: 0,
+      impactDirection: "neutral",
+    };
+  }
+
+  // Fetch each timeframe
+  const timeframes: Record<TimeframeKey, TimeframeData> = {} as Record<TimeframeKey, TimeframeData>;
+  
+  for (const config of TIMEFRAME_CONFIGS) {
+    const targetTime = timestamp + config.ms;
+    
+    if (targetTime > now) {
+      timeframes[config.key] = { price: null, change: null, pending: true };
+      continue;
+    }
+    
+    await delay(100); // Small delay to avoid rate limits
+    const price = await fetchBinancePrice(targetTime, config.interval);
+    
+    let change: number | null = null;
+    if (price !== null && priceAtT !== 0) {
+      change = ((price - priceAtT) / priceAtT) * 100;
+    }
+    
+    timeframes[config.key] = { price, change, pending: false };
+  }
+
+  // Calculate impact score
+  let positiveCount = 0;
+  let negativeCount = 0;
+  let totalMagnitude = 0;
+  let validCount = 0;
+
+  for (const tf of Object.values(timeframes)) {
+    if (tf.change !== null) {
+      validCount++;
+      totalMagnitude += Math.abs(tf.change);
+      if (tf.change > 0) positiveCount++;
+      else if (tf.change < 0) negativeCount++;
+    }
+  }
+
+  const impactDirection = positiveCount > negativeCount ? "positive" : 
+                          negativeCount > positiveCount ? "negative" : "neutral";
+  const impactScore = validCount > 0 ? (totalMagnitude / validCount) * (Math.max(positiveCount, negativeCount) / validCount) : 0;
+
+  return { priceAtT, timeframes, impactScore, impactDirection };
+}
+
 function useNewsFeed() {
   const [tweets, setTweets] = useState<TweetWithPrice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -313,35 +413,9 @@ function useNewsFeed() {
   const [isDemo, setIsDemo] = useState(false);
   const [source, setSource] = useState<string>("");
 
-  // Function to fetch multi-timeframe price for a single tweet
-  const fetchMultiTimeframePrices = useCallback(async (timestamp: number): Promise<{
-    priceAtT: number | null;
-    timeframes: Record<TimeframeKey, TimeframeData>;
-    impactScore: number;
-    impactDirection: "positive" | "negative" | "neutral";
-  }> => {
-    try {
-      const priceRes = await fetch(`/api/price-history?timestamp=${timestamp}&multi=true`);
-      const priceData = await priceRes.json();
-      return {
-        priceAtT: priceData.priceAtT,
-        timeframes: priceData.timeframes || EMPTY_TIMEFRAMES,
-        impactScore: priceData.impactScore || 0,
-        impactDirection: priceData.impactDirection || "neutral",
-      };
-    } catch {
-      return {
-        priceAtT: null,
-        timeframes: EMPTY_TIMEFRAMES,
-        impactScore: 0,
-        impactDirection: "neutral",
-      };
-    }
-  }, []);
-
   // Function to update a single tweet's price data (for refreshing pending timeframes)
   const updateTweetPrice = useCallback(async (tweetId: string, timestamp: number) => {
-    const priceData = await fetchMultiTimeframePrices(timestamp);
+    const priceData = await fetchMultiTimeframePricesClient(timestamp);
     setTweets(prevTweets => 
       prevTweets.map(tweet => 
         tweet.id === tweetId 
@@ -349,7 +423,7 @@ function useNewsFeed() {
           : tweet
       )
     );
-  }, [fetchMultiTimeframePrices]);
+  }, []);
 
   useEffect(() => {
     async function fetchTweetsWithPrices() {
@@ -404,7 +478,9 @@ function useNewsFeed() {
         setTweets(initialTweets);
         setLoading(false);
 
-        // Fetch price data sequentially with throttling to avoid rate limits
+        // Fetch price data client-side (Binance blocks server-side requests)
+        console.log("Fetching prices client-side from Binance...");
+        
         for (let i = 0; i < rawTweets.length; i++) {
           const tweet = rawTweets[i];
           
@@ -415,12 +491,12 @@ function useNewsFeed() {
           }
           
           try {
-            console.log(`Fetching multi-timeframe prices for tweet ${i + 1}/${rawTweets.length}, timestamp: ${new Date(tweet.timestamp).toISOString()}`);
+            console.log(`Fetching prices for tweet ${i + 1}/${rawTweets.length}: ${new Date(tweet.timestamp).toISOString()}`);
             
-            const priceRes = await fetch(`/api/price-history?timestamp=${tweet.timestamp}&multi=true`);
-            const priceData = await priceRes.json();
+            // Fetch prices directly from Binance (client-side)
+            const priceData = await fetchMultiTimeframePricesClient(tweet.timestamp);
 
-            console.log(`Multi-timeframe data for tweet ${tweet.id}:`, priceData);
+            console.log(`Price data for tweet ${tweet.id}:`, priceData);
 
             // Update this specific tweet with price data
             setTweets(prevTweets =>
@@ -428,10 +504,7 @@ function useNewsFeed() {
                 t.id === tweet.id
                   ? {
                       ...t,
-                      priceAtT: priceData.priceAtT,
-                      timeframes: priceData.timeframes || EMPTY_TIMEFRAMES,
-                      impactScore: priceData.impactScore || 0,
-                      impactDirection: priceData.impactDirection || "neutral",
+                      ...priceData,
                     }
                   : t
               )
@@ -446,7 +519,7 @@ function useNewsFeed() {
           }
         }
         
-        console.log("Finished fetching all multi-timeframe prices");
+        console.log("Finished fetching all prices");
       } catch (err) {
         console.error("Error in fetchTweetsWithPrices:", err);
         setError(err instanceof Error ? err.message : "Unknown error");
