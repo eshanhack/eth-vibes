@@ -6,8 +6,9 @@ const rawToken = process.env.X_BEARER_TOKEN || "";
 const X_BEARER_TOKEN = decodeURIComponent(rawToken);
 const TARGET_USERNAME = "DeItaone"; // Financial news account (capital D, capital I, not L)
 
-// Cache configuration - cache tweets for 5 minutes to avoid rate limits
-const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+// Cache configuration - cache tweets for 1 hour to avoid rate limits
+// X API free tier has very strict limits (15 requests per 15 min window)
+const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
 interface TweetData {
   id: string;
   text: string;
@@ -117,6 +118,8 @@ async function getUserTweets(userId: string): Promise<Record<string, unknown>[] 
   // max_results: 10-100, we'll use 20
   const url = `https://api.twitter.com/2/users/${userId}/tweets?max_results=20&tweet.fields=created_at,text&exclude=retweets,replies`;
   
+  console.log("Fetching tweets from:", url);
+  
   try {
     const response = await fetch(url, {
       headers: {
@@ -124,21 +127,26 @@ async function getUserTweets(userId: string): Promise<Record<string, unknown>[] 
       },
     });
 
+    const responseText = await response.text();
+    console.log(`Tweets response (${response.status}):`, responseText.substring(0, 500));
+
     if (!response.ok) {
-      const errorData = await response.text();
-      console.error(`Failed to get tweets: ${response.status}`, errorData);
+      lastApiError = `Tweets fetch failed: ${response.status} - ${responseText}`;
+      console.error(lastApiError);
       return null;
     }
 
-    const data = await response.json();
+    const data = JSON.parse(responseText);
     console.log(`Fetched ${data.data?.length || 0} tweets`);
     
     if (data.data && Array.isArray(data.data)) {
       return data.data;
     }
     
+    lastApiError = "No tweets in response: " + responseText.substring(0, 200);
     return null;
   } catch (error) {
+    lastApiError = `Tweets fetch error: ${String(error)}`;
     console.error("Error fetching tweets:", error);
     return null;
   }
@@ -235,7 +243,11 @@ export async function GET() {
         tweets: demoTweets,
         source: "Demo Data (No tweets found)",
         count: demoTweets.length,
-        isDemo: true
+        isDemo: true,
+        debug: {
+          userId,
+          apiError: lastApiError,
+        }
       });
     }
 
