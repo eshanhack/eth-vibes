@@ -782,6 +782,9 @@ interface TweetRowProps {
 }
 
 function TweetRow({ tweet, onRefresh }: TweetRowProps) {
+  // Ensure timeframes exists with fallback
+  const timeframes = tweet.timeframes || EMPTY_TIMEFRAMES;
+  
   // Format timestamp as HH:MM
   const formattedTime = useMemo(() => {
     const date = new Date(tweet.createdAt);
@@ -800,8 +803,8 @@ function TweetRow({ tweet, onRefresh }: TweetRowProps) {
 
   // Check if any timeframes are still pending
   const hasPendingData = useMemo(() => {
-    return Object.values(tweet.timeframes).some(tf => tf.pending);
-  }, [tweet.timeframes]);
+    return Object.values(timeframes).some(tf => tf?.pending);
+  }, [timeframes]);
 
   // Calculate row highlight based on impact
   const rowStyle = useMemo((): React.CSSProperties => {
@@ -892,7 +895,7 @@ function TweetRow({ tweet, onRefresh }: TweetRowProps) {
       {/* Timeframe Cells */}
       {TIMEFRAMES.map(({ key }) => (
         <td key={key} className="py-2 px-1.5 border-r border-neutral-800/30 text-center min-w-[65px]">
-          <PriceChangeCell data={tweet.timeframes[key]} hasPendingData={hasPendingData} />
+          <PriceChangeCell data={timeframes[key] || { price: null, change: null, pending: true }} hasPendingData={hasPendingData} />
         </td>
       ))}
 
