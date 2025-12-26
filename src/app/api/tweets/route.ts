@@ -8,8 +8,15 @@ const TARGET_USERNAME = "DeItaone"; // Financial news account (capital D, capita
 
 // Cache configuration - cache tweets for 5 minutes to avoid rate limits
 const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+interface TweetData {
+  id: string;
+  text: string;
+  createdAt: string;
+  timestamp: number;
+  url: string | null;
+}
 interface CachedData {
-  tweets: ReturnType<typeof generateDemoTweets>;
+  tweets: TweetData[];
   timestamp: number;
   source: string;
 }
