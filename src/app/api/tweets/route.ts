@@ -1,15 +1,13 @@
 import { NextResponse } from "next/server";
 
-// Apify token should be set in environment variable APIFY_TOKEN
-const APIFY_TOKEN = process.env.APIFY_TOKEN || "";
-const TARGET_USER = "Deltaone";
+// X API Bearer Token - set in environment variable
+const X_BEARER_TOKEN = process.env.X_BEARER_TOKEN || "";
+const TARGET_USERNAME = "DeItaone"; // Note: it's DeItaone with an "I" not "l"
 
-// Demo tweets for when Twitter API is unavailable
-// Using realistic @Deltaone style financial news headlines
+// Demo tweets fallback
 function generateDemoTweets() {
   const now = Date.now();
   const HOUR = 60 * 60 * 1000;
-  const DAY = 24 * HOUR;
   
   const headlines = [
     "BREAKING: Fed Chair Powell signals potential rate cuts in Q1 2025",
@@ -35,288 +33,186 @@ function generateDemoTweets() {
   ];
   
   return headlines.map((text, index) => {
-    // Spread tweets over the past few days
     const hoursAgo = index * 4 + Math.floor(Math.random() * 3);
     const timestamp = now - (hoursAgo * HOUR);
-    const demoId = `demo-${index}-${timestamp}`;
     
     return {
-      id: demoId,
+      id: `demo-${index}-${timestamp}`,
       text: text,
       createdAt: new Date(timestamp).toISOString(),
       timestamp: timestamp,
-      url: null, // Demo tweets don't have real URLs
+      url: null,
     };
   });
 }
 
-// Twitter/X scrapers - trying multiple approaches
-const TWITTER_SCRAPERS = [
-  // Twitter Scraper V2 by API Dojo - highly rated
-  {
-    id: "apidojo/twitter-scraper-v2",
-    name: "API Dojo Twitter Scraper V2",
-    buildInput: () => ({
-      startUrls: [`https://twitter.com/${TARGET_USER}`],
-      maxItems: 20,
-      sort: "Latest",
-      tweetLanguage: "en",
-    }),
-  },
-  // X (Twitter) Scraper by Kaito - works with X.com
-  {
-    id: "kaitoeasyapi/twitter-x-data-scraper", 
-    name: "Kaito X Data Scraper",
-    buildInput: () => ({
-      twitterHandles: [TARGET_USER],
-      maxTweets: 20,
-    }),
-  },
-  // Reliable Twitter Data Scraper
-  {
-    id: "reliable_scraper/twitter-data-scraper",
-    name: "Reliable Twitter Scraper",
-    buildInput: () => ({
-      handles: [TARGET_USER],
-      tweetsDesired: 20,
-    }),
-  },
-  // Tweet Flash
-  {
-    id: "shanes/tweet-flash",
-    name: "Tweet Flash",
-    buildInput: () => ({
-      searchTerms: [`from:${TARGET_USER}`],
-      maxTweets: 20,
-      sort: "Latest",
-    }),
-  },
-  // Twitter Scraper Lite
-  {
-    id: "quacker/twitter-scraper",
-    name: "Quacker Twitter Scraper",
-    buildInput: () => ({
-      handles: [TARGET_USER],
-      maxTweets: 20,
-      mode: "user",
-    }),
-  },
-  // X Scraper by Apify
-  {
-    id: "apify/twitter-scraper",
-    name: "Official Apify Twitter Scraper",
-    buildInput: () => ({
-      handle: [TARGET_USER],
-      mode: "profile",
-      maxItems: 20,
-    }),
-  },
-];
-
-async function tryFetchWithActor(actorConfig: typeof TWITTER_SCRAPERS[0]): Promise<Record<string, unknown>[] | null> {
-  const apiUrl = `https://api.apify.com/v2/acts/${actorConfig.id}/run-sync-get-dataset-items?token=${APIFY_TOKEN}&timeout=60`;
-  const input = actorConfig.buildInput();
-
-  console.log(`\n=== Trying: ${actorConfig.name} ===`);
-  console.log("Actor ID:", actorConfig.id);
-  console.log("Input:", JSON.stringify(input));
-
+// Fetch user ID from username
+async function getUserId(username: string): Promise<string | null> {
+  const url = `https://api.twitter.com/2/users/by/username/${username}`;
+  
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 55000); // 55s timeout
-    
-    const response = await fetch(apiUrl, {
-      method: "POST",
+    const response = await fetch(url, {
       headers: {
-        "Content-Type": "application/json",
+        "Authorization": `Bearer ${X_BEARER_TOKEN}`,
       },
-      body: JSON.stringify(input),
-      signal: controller.signal,
     });
 
-    clearTimeout(timeoutId);
-    console.log("Response status:", response.status);
-
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`Failed with status ${response.status}:`, errorText.substring(0, 300));
+      const errorData = await response.text();
+      console.error(`Failed to get user ID: ${response.status}`, errorData);
       return null;
     }
 
-    const items = await response.json();
-    console.log(`Returned ${Array.isArray(items) ? items.length : 0} items`);
+    const data = await response.json();
+    console.log("User lookup response:", data);
     
-    if (Array.isArray(items) && items.length > 0) {
-      console.log("First item keys:", Object.keys(items[0]));
-      return items;
+    if (data.data?.id) {
+      return data.data.id;
     }
     
-    console.log("No items returned or empty array");
     return null;
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      console.error("Request timed out after 55s");
-    } else {
-      console.error(`Error:`, error);
-    }
+    console.error("Error fetching user ID:", error);
     return null;
   }
 }
 
-function transformTweets(items: Record<string, unknown>[]) {
-  return items.map((item) => {
-    // Try different field names for the tweet text
-    const text = (item.full_text as string) || 
-                 (item.text as string) || 
-                 (item.content as string) ||
-                 (item.tweet as string) ||
-                 (item.body as string) ||
-                 (item.tweetText as string) ||
-                 "";
-    
-    // Try different field names for created time
-    let createdAtRaw = (item.created_at as string) || 
-                       (item.createdAt as string) || 
-                       (item.timestamp as string) ||
-                       (item.date as string) ||
-                       (item.tweetedAt as string) ||
-                       (item.postedAt as string) ||
-                       (item.time as string) ||
-                       (item.datetime as string) ||
-                       "";
-    
-    // Try different field names for ID
-    const id = (item.id as string) || 
-               (item.id_str as string) || 
-               (item.tweetId as string) ||
-               (item.tweet_id as string) ||
-               String(Date.now() + Math.random());
-    
-    // Get URL if available
-    const url = (item.url as string) ||
-                (item.tweetUrl as string) ||
-                (item.link as string) ||
-                null;
+// Fetch tweets from user
+async function getUserTweets(userId: string): Promise<Record<string, unknown>[] | null> {
+  // X API v2 - get user tweets
+  // tweet.fields: created_at for timestamp
+  // max_results: 10-100, we'll use 20
+  const url = `https://api.twitter.com/2/users/${userId}/tweets?max_results=20&tweet.fields=created_at,text&exclude=retweets,replies`;
+  
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "Authorization": `Bearer ${X_BEARER_TOKEN}`,
+      },
+    });
 
-    // Parse timestamp - try multiple formats
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`Failed to get tweets: ${response.status}`, errorData);
+      return null;
+    }
+
+    const data = await response.json();
+    console.log(`Fetched ${data.data?.length || 0} tweets`);
+    
+    if (data.data && Array.isArray(data.data)) {
+      return data.data;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("Error fetching tweets:", error);
+    return null;
+  }
+}
+
+// Transform X API response to our format
+function transformTweets(tweets: Record<string, unknown>[], username: string) {
+  return tweets.map((tweet) => {
+    const id = tweet.id as string;
+    const text = tweet.text as string || "";
+    const createdAt = tweet.created_at as string || "";
+    
+    // Parse timestamp
     let timestamp = 0;
-    if (createdAtRaw) {
-      const parsed = new Date(createdAtRaw);
+    if (createdAt) {
+      const parsed = new Date(createdAt);
       timestamp = isNaN(parsed.getTime()) ? 0 : parsed.getTime();
-    }
-    
-    // If timestamp is 0, try parsing from URL or id
-    if (timestamp === 0 && item.url) {
-      const urlStr = item.url as string;
-      const match = urlStr.match(/status\/(\d+)/);
-      if (match) {
-        // Twitter snowflake ID contains timestamp
-        try {
-          const snowflakeId = BigInt(match[1]);
-          const twitterEpoch = BigInt(1288834974657);
-          timestamp = Number((snowflakeId >> BigInt(22)) + twitterEpoch);
-        } catch (e) {
-          console.error("Failed to parse snowflake ID:", e);
-        }
-      }
-    }
-
-    // If still no timestamp and we have a string ID that looks like a snowflake
-    if (timestamp === 0 && id && /^\d{18,}$/.test(String(id))) {
-      try {
-        const snowflakeId = BigInt(id);
-        const twitterEpoch = BigInt(1288834974657);
-        timestamp = Number((snowflakeId >> BigInt(22)) + twitterEpoch);
-      } catch (e) {
-        console.error("Failed to parse ID as snowflake:", e);
-      }
     }
 
     return {
-      id: String(id),
+      id,
       text,
-      createdAt: createdAtRaw || (timestamp > 0 ? new Date(timestamp).toISOString() : ""),
+      createdAt,
       timestamp,
-      url,
+      url: `https://x.com/${username}/status/${id}`,
     };
   }).filter((tweet) => tweet.text.length > 0);
 }
 
 export async function GET() {
   console.log("\n========================================");
-  console.log("Fetching tweets for @" + TARGET_USER);
-  console.log("Using no-login scrapers (post June 2023)");
+  console.log("Fetching tweets for @" + TARGET_USERNAME);
+  console.log("Using Official X API v2");
   console.log("========================================");
   
-  // If no API token, return demo data immediately
-  if (!APIFY_TOKEN) {
-    console.log("No APIFY_TOKEN set - returning demo data");
+  // Check for bearer token
+  if (!X_BEARER_TOKEN) {
+    console.log("No X_BEARER_TOKEN set - returning demo data");
     const demoTweets = generateDemoTweets();
     return NextResponse.json({
       tweets: demoTweets,
-      source: "Demo Data (APIFY_TOKEN not configured)",
+      source: "Demo Data (X_BEARER_TOKEN not configured)",
       count: demoTweets.length,
       isDemo: true
     });
   }
-  
+
   try {
-    let items: Record<string, unknown>[] | null = null;
-    let successfulScraper = "";
-
-    // Try each scraper until one works
-    for (const scraper of TWITTER_SCRAPERS) {
-      items = await tryFetchWithActor(scraper);
-      if (items && items.length > 0) {
-        successfulScraper = scraper.name;
-        console.log(`\n✓ SUCCESS with: ${scraper.name}`);
-        break;
-      }
-    }
-
-    if (!items || items.length === 0) {
-      console.error("\n✗ All Twitter scrapers failed or returned no data");
-      console.error("Twitter requires login for most content since June 2023");
-      console.log("Returning demo data for UI testing...");
-      
-      // Return demo data so the UI can be tested
-      // These are sample financial news headlines with realistic timestamps
-      const demoTweets = generateDemoTweets();
-      
-      return NextResponse.json(
-        { 
-          tweets: demoTweets,
-          source: "Demo Data (Twitter API unavailable)",
-          count: demoTweets.length,
-          isDemo: true
-        },
-        { status: 200 }
-      );
-    }
-
-    const tweets = transformTweets(items);
-    console.log(`\nFinal processed tweets: ${tweets.length}`);
-    console.log(`Source: ${successfulScraper}`);
+    // Step 1: Get user ID
+    console.log("Step 1: Looking up user ID for @" + TARGET_USERNAME);
+    const userId = await getUserId(TARGET_USERNAME);
     
-    // Log first tweet for verification
-    if (tweets.length > 0) {
-      console.log("Sample tweet:", {
-        text: tweets[0].text.substring(0, 100) + "...",
-        createdAt: tweets[0].createdAt,
-        timestamp: tweets[0].timestamp,
+    if (!userId) {
+      console.error("Could not find user ID for @" + TARGET_USERNAME);
+      const demoTweets = generateDemoTweets();
+      return NextResponse.json({
+        tweets: demoTweets,
+        source: "Demo Data (User lookup failed)",
+        count: demoTweets.length,
+        isDemo: true
+      });
+    }
+    
+    console.log("Found user ID:", userId);
+
+    // Step 2: Get user's tweets
+    console.log("Step 2: Fetching tweets for user ID:", userId);
+    const rawTweets = await getUserTweets(userId);
+    
+    if (!rawTweets || rawTweets.length === 0) {
+      console.error("No tweets returned from API");
+      const demoTweets = generateDemoTweets();
+      return NextResponse.json({
+        tweets: demoTweets,
+        source: "Demo Data (No tweets found)",
+        count: demoTweets.length,
+        isDemo: true
       });
     }
 
-    return NextResponse.json({ 
+    // Step 3: Transform to our format
+    const tweets = transformTweets(rawTweets, TARGET_USERNAME);
+    console.log(`Successfully processed ${tweets.length} tweets`);
+    
+    if (tweets.length > 0) {
+      console.log("First tweet:", {
+        text: tweets[0].text.substring(0, 100) + "...",
+        createdAt: tweets[0].createdAt,
+      });
+    }
+
+    return NextResponse.json({
       tweets,
-      source: successfulScraper,
-      count: tweets.length 
+      source: "X API v2 (Official)",
+      count: tweets.length,
+      isDemo: false
     });
+    
   } catch (error) {
     console.error("Fatal error fetching tweets:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch tweets", details: String(error) },
-      { status: 500 }
-    );
+    const demoTweets = generateDemoTweets();
+    return NextResponse.json({
+      tweets: demoTweets,
+      source: "Demo Data (API Error)",
+      count: demoTweets.length,
+      isDemo: true,
+      error: String(error)
+    });
   }
 }
