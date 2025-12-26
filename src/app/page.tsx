@@ -45,8 +45,6 @@ interface DigitColumnProps {
   colorClass: string;
   moveSize: MoveSize;
   priceDirection: Direction | null;
-  index: number;
-  onFirstDigitAnimationStart?: () => void;
 }
 
 function DigitColumn({ 
@@ -54,12 +52,8 @@ function DigitColumn({
   colorClass, 
   moveSize,
   priceDirection,
-  index,
-  onFirstDigitAnimationStart
 }: DigitColumnProps) {
   const digitValue = parseInt(digit, 10);
-  const prevDigitRef = useRef(digitValue);
-  const isFirstDigit = index === 0;
   
   // Calculate Y offset - each digit takes DIGIT_HEIGHT em
   const yOffset = -digitValue * DIGIT_HEIGHT;
@@ -96,16 +90,6 @@ function DigitColumn({
       filter: `brightness(${brightness})`,
     };
   };
-
-  // Check if digit changed and trigger callback
-  useEffect(() => {
-    if (prevDigitRef.current !== digitValue) {
-      if (isFirstDigit && onFirstDigitAnimationStart) {
-        onFirstDigitAnimationStart();
-      }
-      prevDigitRef.current = digitValue;
-    }
-  }, [digitValue, isFirstDigit, onFirstDigitAnimationStart]);
 
   // Motion blur for whale moves
   const motionBlurClass = moveSize === "whale" ? "motion-blur-active" : "";
@@ -158,7 +142,6 @@ interface DigitRollerProps {
   colorClass: string;
   moveSize: MoveSize;
   priceDirection: Direction | null;
-  onFirstDigitAnimationStart?: () => void;
 }
 
 function DigitRoller({ 
@@ -166,10 +149,8 @@ function DigitRoller({
   colorClass, 
   moveSize,
   priceDirection,
-  onFirstDigitAnimationStart
 }: DigitRollerProps) {
   const characters = useMemo(() => value.split(""), [value]);
-  let digitIndex = 0;
 
   return (
     <div className="flex items-center font-bold tracking-tight tabular-nums">
@@ -177,8 +158,6 @@ function DigitRoller({
         const isDigit = /\d/.test(char);
         
         if (isDigit) {
-          const currentDigitIndex = digitIndex;
-          digitIndex++;
           return (
             <DigitColumn
               key={`digit-${index}`}
@@ -186,8 +165,6 @@ function DigitRoller({
               colorClass={colorClass}
               moveSize={moveSize}
               priceDirection={priceDirection}
-              index={currentDigitIndex}
-              onFirstDigitAnimationStart={currentDigitIndex === 0 ? onFirstDigitAnimationStart : undefined}
             />
           );
         }
@@ -209,7 +186,6 @@ export default function Home() {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [priceDirection, setPriceDirection] = useState<Direction | null>(null);
   const [moveSize, setMoveSize] = useState<MoveSize>(null);
-  const [currentBps, setCurrentBps] = useState(0);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [isSliding, setIsSliding] = useState(false);
   
@@ -221,7 +197,6 @@ export default function Home() {
   const faviconTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const faviconLinkRef = useRef<HTMLLinkElement | null>(null);
   const motionBlurTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const pendingAudioRef = useRef<{ direction: Direction; bps: number } | null>(null);
 
   // Initialize favicon link element
   useEffect(() => {
@@ -278,13 +253,17 @@ export default function Home() {
     setAudioEnabled(true);
   }, []);
 
-  // Play price sound - now triggered by animation start
+  // Play price sound - called directly on price change
   const playPriceSound = useCallback((direction: Direction, bps: number) => {
-    if (!audioContextRef.current || !audioEnabled) return;
-
+    if (!audioContextRef.current) return;
+    
+    // Check if audio context is in a valid state
     const ctx = audioContextRef.current;
+    if (ctx.state === "suspended") {
+      return;
+    }
+    
     const now = ctx.currentTime;
-
     const frequency = direction === "up" ? 800 : 400;
 
     let duration: number;
@@ -342,15 +321,7 @@ export default function Home() {
 
     oscillator.start(now);
     oscillator.stop(now + duration + 0.01);
-  }, [audioEnabled]);
-
-  // Callback when first digit starts animating - triggers synced audio
-  const handleFirstDigitAnimationStart = useCallback(() => {
-    if (pendingAudioRef.current) {
-      playPriceSound(pendingAudioRef.current.direction, pendingAudioRef.current.bps);
-      pendingAudioRef.current = null;
-    }
-  }, [playPriceSound]);
+  }, []);
 
   // Calculate move size from bps
   const getMoveSize = (bps: number): MoveSize => {
@@ -422,10 +393,12 @@ export default function Home() {
                   setPriceDirection(direction);
                   lastDirectionRef.current = direction;
                   setMoveSize(size);
-                  setCurrentBps(bps);
                   flashFavicon(direction, duration);
                   
-                  pendingAudioRef.current = { direction, bps };
+                  // Play audio directly on price change (if enabled)
+                  if (audioEnabled) {
+                    playPriceSound(direction, bps);
+                  }
                   
                   if (size === "whale") {
                     setIsSliding(true);
@@ -437,7 +410,6 @@ export default function Home() {
                   flashTimeoutRef.current = setTimeout(() => {
                     setPriceDirection(null);
                     setMoveSize(null);
-                    setCurrentBps(0);
                   }, duration);
                 }
               }
@@ -480,7 +452,7 @@ export default function Home() {
         clearTimeout(motionBlurTimeoutRef.current);
       }
     };
-  }, [flashFavicon]);
+  }, [flashFavicon, audioEnabled, playPriceSound]);
 
   // Get text color class based on direction and move size
   const getPriceColorClass = () => {
@@ -572,7 +544,6 @@ export default function Home() {
               colorClass={getPriceColorClass()}
               moveSize={moveSize}
               priceDirection={priceDirection}
-              onFirstDigitAnimationStart={handleFirstDigitAnimationStart}
             />
           ) : (
             <span 
