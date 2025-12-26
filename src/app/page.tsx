@@ -1056,12 +1056,20 @@ function NewsSentimentFeed() {
       if (aChange === null || aChange === undefined) return 1;
       if (bChange === null || bChange === undefined) return -1;
       
-      // Sort based on direction
+      // Primary sort: by percentage change
+      let comparison: number;
       if (sortConfig.direction === "desc") {
-        return bChange - aChange; // Highest first
+        comparison = bChange - aChange; // Highest first
       } else {
-        return aChange - bChange; // Lowest first
+        comparison = aChange - bChange; // Lowest first
       }
+      
+      // Secondary sort: if same change, sort by impact score (higher first)
+      if (comparison === 0) {
+        return (b.impactScore || 0) - (a.impactScore || 0);
+      }
+      
+      return comparison;
     });
   }, [tweets, sortConfig]);
 
