@@ -1052,11 +1052,19 @@ function NewsSentimentFeed() {
   }, []);
   
   // Filter tweets based on high impact filter
+  // Shows tweets where ANY of 1m, 10m, or 1h timeframes hit >= 1% move
   const filteredTweets = useMemo(() => {
     if (!showOnlyHighImpact) return tweets;
     return tweets.filter(t => {
+      const change1m = t.timeframes["1m"]?.change;
       const change10m = t.timeframes["10m"]?.change;
-      return change10m !== null && change10m !== undefined && Math.abs(change10m) >= 1;
+      const change1h = t.timeframes["1h"]?.change;
+      
+      const has1mImpact = change1m !== null && change1m !== undefined && Math.abs(change1m) >= 1;
+      const has10mImpact = change10m !== null && change10m !== undefined && Math.abs(change10m) >= 1;
+      const has1hImpact = change1h !== null && change1h !== undefined && Math.abs(change1h) >= 1;
+      
+      return has1mImpact || has10mImpact || has1hImpact;
     });
   }, [tweets, showOnlyHighImpact]);
 
