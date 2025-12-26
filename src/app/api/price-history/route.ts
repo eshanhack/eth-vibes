@@ -12,7 +12,6 @@ const TIMEFRAMES = {
   "10m": { ms: 10 * 60 * 1000, interval: "1m" },
   "30m": { ms: 30 * 60 * 1000, interval: "1m" },
   "1h": { ms: 60 * 60 * 1000, interval: "1h" },
-  "1d": { ms: 24 * 60 * 60 * 1000, interval: "1d" },
 };
 
 type TimeframeKey = keyof typeof TIMEFRAMES;
@@ -122,7 +121,6 @@ export async function GET(request: Request) {
       "10m": { price: null, change: null, pending: false },
       "30m": { price: null, change: null, pending: false },
       "1h": { price: null, change: null, pending: false },
-      "1d": { price: null, change: null, pending: false },
     };
     return NextResponse.json({
       priceAtT: null,

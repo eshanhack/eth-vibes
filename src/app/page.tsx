@@ -9,7 +9,7 @@ type MoveSize = "small" | "medium" | "whale" | null;
 type PriceSource = "hyperliquid" | "binance";
 
 // Timeframe keys for multi-timeframe analysis
-type TimeframeKey = "1m" | "10m" | "30m" | "1h" | "1d";
+type TimeframeKey = "1m" | "10m" | "30m" | "1h";
 
 // Individual timeframe data
 interface TimeframeData {
@@ -303,7 +303,6 @@ const EMPTY_TIMEFRAMES: Record<TimeframeKey, TimeframeData> = {
   "10m": { price: null, change: null, pending: true },
   "30m": { price: null, change: null, pending: true },
   "1h": { price: null, change: null, pending: true },
-  "1d": { price: null, change: null, pending: true },
 };
 
 // Timeframe configurations for client-side fetching
@@ -312,7 +311,6 @@ const TIMEFRAME_CONFIGS: { key: TimeframeKey; ms: number; interval: string }[] =
   { key: "10m", ms: 10 * 60 * 1000, interval: "1m" },
   { key: "30m", ms: 30 * 60 * 1000, interval: "1m" },
   { key: "1h", ms: 60 * 60 * 1000, interval: "1h" },
-  { key: "1d", ms: 24 * 60 * 60 * 1000, interval: "1d" },
 ];
 
 // Client-side function to fetch price from Binance directly
@@ -355,7 +353,6 @@ async function fetchMultiTimeframePricesClient(timestamp: number): Promise<{
         "10m": { price: null, change: null, pending: false },
         "30m": { price: null, change: null, pending: false },
         "1h": { price: null, change: null, pending: false },
-        "1d": { price: null, change: null, pending: false },
       },
       impactScore: 0,
       impactDirection: "neutral",
@@ -793,7 +790,6 @@ const TIMEFRAMES: { key: TimeframeKey; label: string; threshold: number }[] = [
   { key: "10m", label: "10M", threshold: 10 * 60 * 1000 },
   { key: "30m", label: "30M", threshold: 30 * 60 * 1000 },
   { key: "1h", label: "1H", threshold: 60 * 60 * 1000 },
-  { key: "1d", label: "1D", threshold: 24 * 60 * 60 * 1000 },
 ];
 
 // Price Change Cell Component
@@ -1266,7 +1262,7 @@ function NewsSentimentFeed() {
             </span>
             <span className="text-neutral-700 text-[10px]">|</span>
             <span className="text-neutral-500 text-[9px] font-mono">
-              1M • 10M • 30M • 1H • 1D
+              1M • 10M • 30M • 1H
             </span>
           </div>
           <div className="flex items-center gap-4">
