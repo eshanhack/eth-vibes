@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Redis } from "@upstash/redis";
 
 // X API Bearer Token - set in environment variable
 // Decode URL-encoded tokens if needed
@@ -6,9 +7,16 @@ const rawToken = process.env.X_BEARER_TOKEN || "";
 const X_BEARER_TOKEN = decodeURIComponent(rawToken);
 const TARGET_USERNAME = "DeItaone"; // Financial news account (capital D, capital I, not L)
 
-// Cache configuration - cache tweets for 1 hour to avoid rate limits
-// X API free tier has very strict limits (15 requests per 15 min window)
-const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
+// Redis cache configuration
+const CACHE_KEY = "deltaone_tweets";
+const CACHE_TTL_SECONDS = 3600; // 1 hour
+
+// Initialize Redis client (uses STORAGE_URL and STORAGE_TOKEN from Vercel)
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL || process.env.STORAGE_URL || "",
+  token: process.env.KV_REST_API_TOKEN || process.env.STORAGE_REST_API_TOKEN || "",
+});
+
 interface TweetData {
   id: string;
   text: string;
@@ -21,7 +29,6 @@ interface CachedData {
   timestamp: number;
   source: string;
 }
-let cachedTweets: CachedData | null = null;
 
 // Demo tweets fallback
 function generateDemoTweets() {
@@ -180,20 +187,27 @@ function transformTweets(tweets: Record<string, unknown>[], username: string) {
 export async function GET() {
   console.log("\n========================================");
   console.log("Fetching tweets for @" + TARGET_USERNAME);
-  console.log("Using Official X API v2");
+  console.log("Using Official X API v2 with Redis Cache");
   console.log("========================================");
   
-  // Check cache first to avoid rate limits
-  if (cachedTweets && (Date.now() - cachedTweets.timestamp) < CACHE_DURATION_MS) {
-    console.log("Returning cached tweets (age: " + Math.round((Date.now() - cachedTweets.timestamp) / 1000) + "s)");
-    return NextResponse.json({
-      tweets: cachedTweets.tweets,
-      source: cachedTweets.source + " (cached)",
-      count: cachedTweets.tweets.length,
-      isDemo: false,
-      cached: true,
-      cacheAge: Math.round((Date.now() - cachedTweets.timestamp) / 1000),
-    });
+  // Check Redis cache first to avoid rate limits
+  try {
+    const cached = await redis.get<CachedData>(CACHE_KEY);
+    if (cached && cached.tweets && cached.tweets.length > 0) {
+      const cacheAge = Math.round((Date.now() - cached.timestamp) / 1000);
+      console.log(`Returning Redis cached tweets (age: ${cacheAge}s)`);
+      return NextResponse.json({
+        tweets: cached.tweets,
+        source: cached.source + " (Redis cached)",
+        count: cached.tweets.length,
+        isDemo: false,
+        cached: true,
+        cacheAge,
+      });
+    }
+  } catch (cacheError) {
+    console.error("Redis cache read error:", cacheError);
+    // Continue without cache
   }
   
   // Check for bearer token
@@ -262,13 +276,20 @@ export async function GET() {
       });
     }
 
-    // Cache the results
-    cachedTweets = {
+    // Cache the results in Redis
+    const cacheData: CachedData = {
       tweets,
       timestamp: Date.now(),
       source: "X API v2 (Official)",
     };
-    console.log("Cached tweets for 5 minutes");
+    
+    try {
+      await redis.set(CACHE_KEY, cacheData, { ex: CACHE_TTL_SECONDS });
+      console.log(`Cached ${tweets.length} tweets in Redis for 1 hour`);
+    } catch (cacheError) {
+      console.error("Redis cache write error:", cacheError);
+      // Continue without caching
+    }
 
     return NextResponse.json({
       tweets,
