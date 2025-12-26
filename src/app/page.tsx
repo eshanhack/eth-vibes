@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { motion, LayoutGroup } from "framer-motion";
+import { motion, LayoutGroup, AnimatePresence } from "framer-motion";
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 type Direction = "up" | "down";
@@ -922,7 +922,11 @@ function TweetRow({ tweet, onRefresh }: TweetRowProps) {
       layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ layout: { type: "spring", stiffness: 300, damping: 30 } }}
+      exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2 } }}
+      transition={{ 
+        layout: { type: "spring", stiffness: 300, damping: 30 },
+        opacity: { duration: 0.2 }
+      }}
       className="border-b border-neutral-800/50 hover:bg-white/[0.02] transition-all duration-200"
       style={rowStyle}
     >
@@ -1031,6 +1035,9 @@ function NewsSentimentFeed() {
     column: "10m",
     direction: "desc",
   });
+  
+  // High impact filter state - show only tweets with >= 1% move in 10m
+  const [showOnlyHighImpact, setShowOnlyHighImpact] = useState(false);
 
   // Handle column header click to toggle sorting
   const handleSort = useCallback((column: TimeframeKey) => {
@@ -1043,12 +1050,21 @@ function NewsSentimentFeed() {
       return { column, direction: "desc" };
     });
   }, []);
+  
+  // Filter tweets based on high impact filter
+  const filteredTweets = useMemo(() => {
+    if (!showOnlyHighImpact) return tweets;
+    return tweets.filter(t => {
+      const change10m = t.timeframes["10m"]?.change;
+      return change10m !== null && change10m !== undefined && Math.abs(change10m) >= 1;
+    });
+  }, [tweets, showOnlyHighImpact]);
 
-  // Sort tweets based on current sort config
+  // Sort tweets based on current sort config (operates on filtered tweets)
   const sortedTweets = useMemo(() => {
-    if (!sortConfig.column) return tweets;
+    if (!sortConfig.column) return filteredTweets;
     
-    return [...tweets].sort((a, b) => {
+    return [...filteredTweets].sort((a, b) => {
       const aChange = a.timeframes[sortConfig.column!]?.change;
       const bChange = b.timeframes[sortConfig.column!]?.change;
       
@@ -1071,7 +1087,7 @@ function NewsSentimentFeed() {
       
       return comparison;
     });
-  }, [tweets, sortConfig]);
+  }, [filteredTweets, sortConfig]);
 
   // Bloomberg-style title bar
   const TitleBar = () => (
@@ -1086,6 +1102,22 @@ function NewsSentimentFeed() {
         )}
       </div>
       <div className="flex items-center gap-3">
+        {/* High Impact Filter Toggle */}
+        <button
+          onClick={() => setShowOnlyHighImpact(!showOnlyHighImpact)}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all duration-300 ${
+            showOnlyHighImpact
+              ? "bg-amber-500/30 text-amber-400 border border-amber-500/50 shadow-[0_0_12px_rgba(245,158,11,0.4)]"
+              : "bg-neutral-800/50 text-neutral-500 border border-neutral-700 hover:border-neutral-600 hover:text-neutral-400"
+          }`}
+        >
+          <span className={showOnlyHighImpact ? "animate-pulse" : ""}>⚡</span>
+          <span>1% Filter</span>
+          {showOnlyHighImpact && (
+            <span className="ml-1 text-[8px] opacity-75">ON</span>
+          )}
+        </button>
+        <span className="text-neutral-700">|</span>
         <span className="text-neutral-500 text-xs uppercase">ETH/USD</span>
         <span className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 text-[10px] font-bold rounded border border-cyan-500/30">
           MULTI-TF ANALYSIS
@@ -1196,9 +1228,11 @@ function NewsSentimentFeed() {
               
               {/* Table Body */}
               <tbody>
-                {sortedTweets.map((tweet) => (
-                  <TweetRow key={tweet.id} tweet={tweet} onRefresh={updateTweetPrice} />
-                ))}
+                <AnimatePresence mode="popLayout">
+                  {sortedTweets.map((tweet) => (
+                    <TweetRow key={tweet.id} tweet={tweet} onRefresh={updateTweetPrice} />
+                  ))}
+                </AnimatePresence>
               </tbody>
             </table>
           </LayoutGroup>
@@ -1208,7 +1242,15 @@ function NewsSentimentFeed() {
         <div className="border-t border-neutral-700 py-2 px-3 flex items-center justify-between bg-neutral-900/50">
           <div className="flex items-center gap-4">
             <span className="text-neutral-500 text-[10px] font-mono uppercase">
-              {tweets.length} Headlines
+              {showOnlyHighImpact ? (
+                <span>
+                  <span className="text-amber-400">{sortedTweets.length}</span>
+                  <span className="text-neutral-600">/{tweets.length}</span>
+                  {" "}High Impact
+                </span>
+              ) : (
+                <span>{tweets.length} Headlines</span>
+              )}
             </span>
             <span className="text-neutral-700 text-[10px]">|</span>
             <span className="text-neutral-600 text-[10px] font-mono">
