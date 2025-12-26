@@ -186,7 +186,7 @@ export default function Home() {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [priceDirection, setPriceDirection] = useState<Direction | null>(null);
   const [moveSize, setMoveSize] = useState<MoveSize>(null);
-  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
   const [isSliding, setIsSliding] = useState(false);
   
   const wsRef = useRef<WebSocket | null>(null);
@@ -197,6 +197,37 @@ export default function Home() {
   const faviconTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const faviconLinkRef = useRef<HTMLLinkElement | null>(null);
   const motionBlurTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Initialize AudioContext and unlock on first user interaction
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext();
+      }
+      if (audioContextRef.current.state === "suspended") {
+        audioContextRef.current.resume().then(() => {
+          setAudioUnlocked(true);
+        });
+      } else {
+        setAudioUnlocked(true);
+      }
+      // Remove listeners after first interaction
+      document.removeEventListener("click", unlockAudio);
+      document.removeEventListener("keydown", unlockAudio);
+      document.removeEventListener("touchstart", unlockAudio);
+    };
+
+    // Add listeners for user interaction
+    document.addEventListener("click", unlockAudio);
+    document.addEventListener("keydown", unlockAudio);
+    document.addEventListener("touchstart", unlockAudio);
+
+    return () => {
+      document.removeEventListener("click", unlockAudio);
+      document.removeEventListener("keydown", unlockAudio);
+      document.removeEventListener("touchstart", unlockAudio);
+    };
+  }, []);
 
   // Initialize favicon link element
   useEffect(() => {
@@ -242,25 +273,16 @@ export default function Home() {
     }
   }, [status, ethPrice]);
 
-  // Initialize AudioContext on user interaction
-  const enableAudio = useCallback(() => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext();
-    }
-    if (audioContextRef.current.state === "suspended") {
-      audioContextRef.current.resume();
-    }
-    setAudioEnabled(true);
-  }, []);
-
   // Play price sound - called directly on price change
   const playPriceSound = useCallback((direction: Direction, bps: number) => {
     if (!audioContextRef.current) return;
     
-    // Check if audio context is in a valid state
     const ctx = audioContextRef.current;
+    
+    // Try to resume if suspended
     if (ctx.state === "suspended") {
-      return;
+      ctx.resume();
+      return; // Skip this tick, will play on next
     }
     
     const now = ctx.currentTime;
@@ -273,54 +295,52 @@ export default function Home() {
 
     if (bps < 1) {
       duration = 0.08;
-      volume = 0.08;
+      volume = 0.15;
       waveType = "sine";
     } else if (bps <= 5) {
-      duration = 0.5;
-      volume = 0.2;
+      duration = 0.15;
+      volume = 0.25;
       waveType = "sine";
     } else {
-      duration = 1.0;
+      duration = 0.5;
       volume = 0.4;
       waveType = "triangle";
       useAlarmEffect = true;
     }
 
-    const oscillator = ctx.createOscillator();
-    const gainNode = ctx.createGain();
+    try {
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
 
-    oscillator.connect(gainNode);
-    gainNode.connect(ctx.destination);
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
 
-    oscillator.type = waveType;
-    oscillator.frequency.setValueAtTime(frequency, now);
+      oscillator.type = waveType;
+      oscillator.frequency.setValueAtTime(frequency, now);
 
-    if (useAlarmEffect) {
-      const highFreq = frequency * 1.25;
-      const lowFreq = frequency;
-      const oscillations = 4;
-      const stepDuration = duration / (oscillations * 2);
-      
-      for (let i = 0; i < oscillations; i++) {
-        const t = now + i * stepDuration * 2;
-        oscillator.frequency.setValueAtTime(lowFreq, t);
-        oscillator.frequency.linearRampToValueAtTime(highFreq, t + stepDuration);
-        oscillator.frequency.linearRampToValueAtTime(lowFreq, t + stepDuration * 2);
+      if (useAlarmEffect) {
+        const highFreq = frequency * 1.25;
+        const lowFreq = frequency;
+        const oscillations = 3;
+        const stepDuration = duration / (oscillations * 2);
+        
+        for (let i = 0; i < oscillations; i++) {
+          const t = now + i * stepDuration * 2;
+          oscillator.frequency.setValueAtTime(lowFreq, t);
+          oscillator.frequency.linearRampToValueAtTime(highFreq, t + stepDuration);
+          oscillator.frequency.linearRampToValueAtTime(lowFreq, t + stepDuration * 2);
+        }
       }
-    }
 
-    gainNode.gain.setValueAtTime(0, now);
-    gainNode.gain.linearRampToValueAtTime(volume, now + 0.01);
-    
-    if (useAlarmEffect) {
-      gainNode.gain.setValueAtTime(volume, now + duration * 0.7);
+      gainNode.gain.setValueAtTime(0, now);
+      gainNode.gain.linearRampToValueAtTime(volume, now + 0.005);
       gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
-    } else {
-      gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
-    }
 
-    oscillator.start(now);
-    oscillator.stop(now + duration + 0.01);
+      oscillator.start(now);
+      oscillator.stop(now + duration + 0.01);
+    } catch (e) {
+      console.error("Audio error:", e);
+    }
   }, []);
 
   // Calculate move size from bps
@@ -395,10 +415,8 @@ export default function Home() {
                   setMoveSize(size);
                   flashFavicon(direction, duration);
                   
-                  // Play audio directly on price change (if enabled)
-                  if (audioEnabled) {
-                    playPriceSound(direction, bps);
-                  }
+                  // Always try to play audio
+                  playPriceSound(direction, bps);
                   
                   if (size === "whale") {
                     setIsSliding(true);
@@ -452,7 +470,7 @@ export default function Home() {
         clearTimeout(motionBlurTimeoutRef.current);
       }
     };
-  }, [flashFavicon, audioEnabled, playPriceSound]);
+  }, [flashFavicon, playPriceSound]);
 
   // Get text color class based on direction and move size
   const getPriceColorClass = () => {
@@ -505,6 +523,15 @@ export default function Home() {
           }`}
         />
       </div>
+
+      {/* Audio unlock hint - shows until user clicks */}
+      {!audioUnlocked && (
+        <div className="fixed top-6 left-6 z-20">
+          <span className="text-white/30 text-xs tracking-widest uppercase animate-pulse">
+            Click anywhere for audio
+          </span>
+        </div>
+      )}
 
       {/* Subtle grid background */}
       <div 
@@ -561,32 +588,6 @@ export default function Home() {
           {status === "connecting" && "Connecting..."}
           {status === "disconnected" && "Reconnecting..."}
         </div>
-
-        {/* Audio Toggle Button */}
-        <button
-          onClick={enableAudio}
-          className={`mt-4 px-6 py-3 text-xs tracking-[0.2em] uppercase transition-all duration-300 border ${
-            audioEnabled
-              ? "border-emerald-500/50 text-emerald-400 bg-emerald-500/10"
-              : "border-white/20 text-white/50 hover:border-white/40 hover:text-white/80 hover:bg-white/5"
-          }`}
-        >
-          {audioEnabled ? (
-            <span className="flex items-center gap-2">
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-              </svg>
-              Audio On
-            </span>
-          ) : (
-            <span className="flex items-center gap-2">
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
-              </svg>
-              Start Audio
-            </span>
-          )}
-        </button>
       </div>
 
       {/* Bottom attribution */}
