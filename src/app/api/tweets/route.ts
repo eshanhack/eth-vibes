@@ -156,6 +156,7 @@ function transformTweets(tweets: Record<string, unknown>[], username: string) {
     if (createdAt) {
       const parsed = new Date(createdAt);
       timestamp = isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+      console.log(`Tweet ${id}: createdAt="${createdAt}" -> timestamp=${timestamp} (${new Date(timestamp).toISOString()})`);
     }
 
     return {

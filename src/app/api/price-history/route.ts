@@ -24,19 +24,26 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function fetchPrice(timestamp: number, interval: string = "1m"): Promise<number | null> {
   try {
     const url = `https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=${interval}&startTime=${timestamp}&limit=1`;
+    console.log(`Fetching price: ${url}`);
+    
     const response = await fetch(url);
     
     if (!response.ok) {
-      console.error(`Binance API error: ${response.status}`);
+      const errorText = await response.text();
+      console.error(`Binance API error: ${response.status}`, errorText);
       return null;
     }
     
     const data = await response.json();
+    console.log(`Binance response for ${new Date(timestamp).toISOString()}:`, JSON.stringify(data).substring(0, 200));
     
     if (Array.isArray(data) && data.length > 0 && Array.isArray(data[0])) {
-      return parseFloat(data[0][4]); // Close price
+      const price = parseFloat(data[0][4]); // Close price
+      console.log(`Price at ${new Date(timestamp).toISOString()}: $${price}`);
+      return price;
     }
     
+    console.log("No data returned from Binance for timestamp:", timestamp);
     return null;
   } catch (error) {
     console.error("Error fetching price:", error);
@@ -98,13 +105,26 @@ export async function GET(request: Request) {
   console.log(`Multi-timeframe price request: T=${new Date(timeT).toISOString()}`);
 
   // First, fetch the base price at time T
+  console.log("Fetching base price at T:", new Date(timeT).toISOString());
   const priceAtT = await fetchPrice(timeT);
+  console.log("Base price at T:", priceAtT);
   
   if (priceAtT === null) {
+    // Return all timeframes as not pending but with null values (no data available)
+    const emptyTimeframes: Record<TimeframeKey, { price: number | null; change: number | null; pending: boolean }> = {
+      "1m": { price: null, change: null, pending: false },
+      "10m": { price: null, change: null, pending: false },
+      "30m": { price: null, change: null, pending: false },
+      "1h": { price: null, change: null, pending: false },
+      "1d": { price: null, change: null, pending: false },
+    };
     return NextResponse.json({
       priceAtT: null,
-      timeframes: {},
-      error: "Could not fetch base price",
+      timeframes: emptyTimeframes,
+      impactScore: 0,
+      impactDirection: "neutral",
+      error: "Could not fetch base price - data may not be available for this timestamp",
+      timeT,
     });
   }
 
