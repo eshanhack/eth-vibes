@@ -26,7 +26,13 @@ async function fetchPrice(timestamp: number, interval: string = "1m"): Promise<n
     const url = `https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=${interval}&startTime=${timestamp}&limit=1`;
     console.log(`Fetching price: ${url}`);
     
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; ETH-Vibes/1.0)',
+      },
+    });
     
     if (!response.ok) {
       const errorText = await response.text();
