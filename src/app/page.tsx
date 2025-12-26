@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 type Direction = "up" | "down";
 type MoveSize = "small" | "medium" | "whale" | null;
+type PriceSource = "hyperliquid" | "binance";
 
 // Spring transition for digit roller - snappy, mechanical feel
 const digitSpringTransition = {
@@ -13,6 +14,12 @@ const digitSpringTransition = {
   stiffness: 300,
   damping: 30,
 };
+
+// Audio throttle interval for Binance (max 5 sounds per second = 200ms)
+const AUDIO_THROTTLE_MS = 200;
+
+// Price gap threshold for alert (0.10%)
+const GAP_ALERT_THRESHOLD = 0.10;
 
 // Favicon SVGs as data URIs
 const FAVICON_DEFAULT = "data:image/svg+xml," + encodeURIComponent(`
@@ -39,7 +46,230 @@ const FAVICON_DOWN = "data:image/svg+xml," + encodeURIComponent(`
 // Height of each digit in the roller (matches line-height)
 const DIGIT_HEIGHT = 1.2; // in em units
 
-// Individual digit column component
+// ========== usePrice Hook ==========
+interface UsePriceResult {
+  price: number | null;
+  formattedPrice: string | null;
+  status: ConnectionStatus;
+}
+
+function usePrice(
+  source: PriceSource,
+  onPriceChange?: (price: number, prevPrice: number) => void
+): UsePriceResult {
+  const [price, setPrice] = useState<number | null>(null);
+  const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  const wsRef = useRef<WebSocket | null>(null);
+  const prevPriceRef = useRef<number | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    // Reset state when source changes
+    setPrice(null);
+    setStatus("connecting");
+    prevPriceRef.current = null;
+
+    // Clean up previous connection
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    const connect = () => {
+      setStatus("connecting");
+
+      let ws: WebSocket;
+
+      if (source === "hyperliquid") {
+        ws = new WebSocket("wss://api.hyperliquid.xyz/ws");
+        
+        ws.onopen = () => {
+          setStatus("connected");
+          ws.send(
+            JSON.stringify({
+              method: "subscribe",
+              subscription: { type: "allMids" },
+            })
+          );
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.channel === "allMids" && data.data?.mids) {
+              const ethMid = data.data.mids["ETH"];
+              if (ethMid) {
+                const newPrice = parseFloat(ethMid);
+                if (prevPriceRef.current !== null && onPriceChange) {
+                  onPriceChange(newPrice, prevPriceRef.current);
+                }
+                prevPriceRef.current = newPrice;
+                setPrice(newPrice);
+              }
+            }
+          } catch (e) {
+            console.error("Hyperliquid parse error:", e);
+          }
+        };
+      } else {
+        // Binance
+        ws = new WebSocket("wss://stream.binance.com:9443/ws/ethusdt@aggTrade");
+        
+        ws.onopen = () => {
+          setStatus("connected");
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            // Binance aggTrade format: { p: "price", ... }
+            if (data.p) {
+              const newPrice = parseFloat(data.p);
+              if (prevPriceRef.current !== null && onPriceChange) {
+                onPriceChange(newPrice, prevPriceRef.current);
+              }
+              prevPriceRef.current = newPrice;
+              setPrice(newPrice);
+            }
+          } catch (e) {
+            console.error("Binance parse error:", e);
+          }
+        };
+      }
+
+      ws.onclose = () => {
+        setStatus("disconnected");
+        // Reconnect after 3 seconds
+        reconnectTimeoutRef.current = setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+
+      wsRef.current = ws;
+    };
+
+    connect();
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+    };
+  }, [source, onPriceChange]);
+
+  const formattedPrice = useMemo(() => {
+    if (price === null) return null;
+    return price.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }, [price]);
+
+  return { price, formattedPrice, status };
+}
+
+// ========== useShadowPrice Hook - Silent background feed ==========
+function useShadowPrice(source: PriceSource): number | null {
+  const [price, setPrice] = useState<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    setPrice(null);
+
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    const connect = () => {
+      let ws: WebSocket;
+
+      if (source === "hyperliquid") {
+        ws = new WebSocket("wss://api.hyperliquid.xyz/ws");
+        
+        ws.onopen = () => {
+          ws.send(
+            JSON.stringify({
+              method: "subscribe",
+              subscription: { type: "allMids" },
+            })
+          );
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.channel === "allMids" && data.data?.mids) {
+              const ethMid = data.data.mids["ETH"];
+              if (ethMid) {
+                setPrice(parseFloat(ethMid));
+              }
+            }
+          } catch (e) {
+            // Silent fail for shadow feed
+          }
+        };
+      } else {
+        ws = new WebSocket("wss://stream.binance.com:9443/ws/ethusdt@aggTrade");
+        
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.p) {
+              setPrice(parseFloat(data.p));
+            }
+          } catch (e) {
+            // Silent fail for shadow feed
+          }
+        };
+      }
+
+      ws.onclose = () => {
+        reconnectTimeoutRef.current = setTimeout(connect, 5000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+
+      wsRef.current = ws;
+    };
+
+    connect();
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+    };
+  }, [source]);
+
+  return price;
+}
+
+// ========== Components ==========
+
 interface DigitColumnProps {
   digit: string;
   colorClass: string;
@@ -54,11 +284,8 @@ function DigitColumn({
   priceDirection,
 }: DigitColumnProps) {
   const digitValue = parseInt(digit, 10);
-  
-  // Calculate Y offset - each digit takes DIGIT_HEIGHT em
   const yOffset = -digitValue * DIGIT_HEIGHT;
 
-  // Calculate intensity-based glow
   const getGlowStyle = (): React.CSSProperties => {
     if (!priceDirection) return {};
     
@@ -91,7 +318,6 @@ function DigitColumn({
     };
   };
 
-  // Motion blur for whale moves
   const motionBlurClass = moveSize === "whale" ? "motion-blur-active" : "";
 
   return (
@@ -119,7 +345,6 @@ function DigitColumn({
   );
 }
 
-// Static character component (for , .)
 interface StaticCharProps {
   char: string;
   colorClass: string;
@@ -136,7 +361,6 @@ function StaticChar({ char, colorClass }: StaticCharProps) {
   );
 }
 
-// Digit Roller component
 interface DigitRollerProps {
   value: string;
   colorClass: string;
@@ -181,108 +405,178 @@ function DigitRoller({
   );
 }
 
+// Source Selector Component
+interface SourceSelectorProps {
+  source: PriceSource;
+  onSourceChange: (source: PriceSource) => void;
+}
+
+function SourceSelector({ source, onSourceChange }: SourceSelectorProps) {
+  return (
+    <div className="flex items-center gap-1 p-1 bg-white/5 rounded-lg">
+      <button
+        onClick={() => onSourceChange("hyperliquid")}
+        className={`px-3 py-1.5 text-xs tracking-wider uppercase rounded transition-all duration-200 ${
+          source === "hyperliquid"
+            ? "bg-white/10 text-white"
+            : "text-white/40 hover:text-white/60"
+        }`}
+      >
+        Hyperliquid
+      </button>
+      <button
+        onClick={() => onSourceChange("binance")}
+        className={`px-3 py-1.5 text-xs tracking-wider uppercase rounded transition-all duration-200 ${
+          source === "binance"
+            ? "bg-white/10 text-white"
+            : "text-white/40 hover:text-white/60"
+        }`}
+      >
+        Binance
+      </button>
+    </div>
+  );
+}
+
+// Source Badge Component - shows next to price
+interface SourceBadgeProps {
+  source: PriceSource;
+}
+
+function SourceBadge({ source }: SourceBadgeProps) {
+  if (source === "hyperliquid") {
+    return (
+      <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-500/10 rounded border border-emerald-500/20">
+        <div className="w-2 h-2 rounded-full bg-emerald-400" />
+        <span className="text-emerald-400/80 text-[10px] tracking-wider uppercase font-medium">HL</span>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="flex items-center gap-1.5 px-2 py-1 bg-yellow-500/10 rounded border border-yellow-500/20">
+      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none">
+        <path d="M12 2L6 8.5L12 6L18 8.5L12 2Z" fill="#F3BA2F"/>
+        <path d="M12 6L6 8.5L12 15L18 8.5L12 6Z" fill="#F3BA2F"/>
+        <path d="M6 12.5L12 19L12 15L6 12.5Z" fill="#F3BA2F"/>
+        <path d="M18 12.5L12 19L12 15L18 12.5Z" fill="#F3BA2F"/>
+      </svg>
+      <span className="text-yellow-500/80 text-[10px] tracking-wider uppercase font-medium">BN</span>
+    </div>
+  );
+}
+
+// Price Gap Display Component
+interface PriceGapProps {
+  primaryPrice: number | null;
+  shadowPrice: number | null;
+  primarySource: PriceSource;
+}
+
+function PriceGap({ primaryPrice, shadowPrice, primarySource }: PriceGapProps) {
+  const gap = useMemo(() => {
+    if (primaryPrice === null || shadowPrice === null) return null;
+    // Calculate percentage difference: (primary - shadow) / shadow * 100
+    const diff = ((primaryPrice - shadowPrice) / shadowPrice) * 100;
+    return diff;
+  }, [primaryPrice, shadowPrice]);
+
+  if (gap === null) {
+    return (
+      <div className="flex items-center gap-2 text-white/20 text-xs tracking-widest">
+        <span className="uppercase">Gap</span>
+        <span className="tabular-nums">--</span>
+      </div>
+    );
+  }
+
+  const absGap = Math.abs(gap);
+  const isAlert = absGap >= GAP_ALERT_THRESHOLD;
+  const isPositive = gap > 0;
+  const shadowSource = primarySource === "hyperliquid" ? "BN" : "HL";
+
+  return (
+    <div className={`flex items-center gap-3 text-xs tracking-widest ${isAlert ? "animate-pulse-yellow" : ""}`}>
+      <span className="text-white/30 uppercase">
+        {primarySource === "hyperliquid" ? "HL" : "BN"} vs {shadowSource}
+      </span>
+      <span 
+        className={`tabular-nums font-medium ${
+          isAlert 
+            ? "text-yellow-400" 
+            : isPositive 
+              ? "text-emerald-400/60" 
+              : "text-red-400/60"
+        }`}
+      >
+        {isPositive ? "+" : ""}{gap.toFixed(3)}%
+      </span>
+      {isAlert && (
+        <span className="text-yellow-400/80 text-[10px] uppercase tracking-wider">
+          Wide Spread
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ========== Main Component ==========
+
 export default function Home() {
-  const [ethPrice, setEthPrice] = useState<string | null>(null);
-  const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  const [source, setSource] = useState<PriceSource>("hyperliquid");
   const [priceDirection, setPriceDirection] = useState<Direction | null>(null);
   const [moveSize, setMoveSize] = useState<MoveSize>(null);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const [isSliding, setIsSliding] = useState(false);
   
-  const wsRef = useRef<WebSocket | null>(null);
-  const prevPriceRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const lastDirectionRef = useRef<Direction>("up");
   const flashTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const faviconTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const faviconLinkRef = useRef<HTMLLinkElement | null>(null);
   const motionBlurTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Audio throttle state for Binance
+  const lastAudioTimeRef = useRef<number>(0);
+  const pendingAudioRef = useRef<{ direction: Direction; bps: number } | null>(null);
+  const audioThrottleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Initialize AudioContext and unlock on first user interaction
-  useEffect(() => {
-    const unlockAudio = () => {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext();
-      }
-      if (audioContextRef.current.state === "suspended") {
-        audioContextRef.current.resume().then(() => {
-          setAudioUnlocked(true);
-        });
-      } else {
-        setAudioUnlocked(true);
-      }
-      // Remove listeners after first interaction
-      document.removeEventListener("click", unlockAudio);
-      document.removeEventListener("keydown", unlockAudio);
-      document.removeEventListener("touchstart", unlockAudio);
-    };
+  // Shadow source is opposite of main source
+  const shadowSource: PriceSource = source === "hyperliquid" ? "binance" : "hyperliquid";
 
-    // Add listeners for user interaction
-    document.addEventListener("click", unlockAudio);
-    document.addEventListener("keydown", unlockAudio);
-    document.addEventListener("touchstart", unlockAudio);
-
-    return () => {
-      document.removeEventListener("click", unlockAudio);
-      document.removeEventListener("keydown", unlockAudio);
-      document.removeEventListener("touchstart", unlockAudio);
-    };
+  // Calculate move size from bps
+  const getMoveSize = useCallback((bps: number): MoveSize => {
+    if (bps < 1) return "small";
+    if (bps <= 5) return "medium";
+    return "whale";
   }, []);
 
-  // Initialize favicon link element
-  useEffect(() => {
-    let link = document.querySelector<HTMLLinkElement>("link[rel*='icon']");
-    if (!link) {
-      link = document.createElement("link");
-      link.rel = "icon";
-      document.head.appendChild(link);
+  // Get flash duration based on move size
+  const getFlashDuration = useCallback((size: MoveSize): number => {
+    switch (size) {
+      case "small": return 150;
+      case "medium": return 500;
+      case "whale": return 1500;
+      default: return 300;
     }
-    link.href = FAVICON_DEFAULT;
-    faviconLinkRef.current = link;
-
-    return () => {
-      if (faviconLinkRef.current) {
-        faviconLinkRef.current.href = FAVICON_DEFAULT;
-      }
-    };
   }, []);
 
-  // Change favicon temporarily
-  const flashFavicon = useCallback((direction: Direction, duration: number) => {
-    if (!faviconLinkRef.current) return;
-
-    if (faviconTimeoutRef.current) {
-      clearTimeout(faviconTimeoutRef.current);
+  // Get motion blur duration based on move size
+  const getMotionBlurDuration = useCallback((size: MoveSize): number => {
+    switch (size) {
+      case "whale": return 200;
+      default: return 0;
     }
-
-    faviconLinkRef.current.href = direction === "up" ? FAVICON_UP : FAVICON_DOWN;
-
-    faviconTimeoutRef.current = setTimeout(() => {
-      if (faviconLinkRef.current) {
-        faviconLinkRef.current.href = FAVICON_DEFAULT;
-      }
-    }, duration);
   }, []);
 
-  // Update document title based on connection status and price
-  useEffect(() => {
-    if (status === "connected" && ethPrice) {
-      document.title = `$${ethPrice} - ETH`;
-    } else {
-      document.title = "ETH Ticker";
-    }
-  }, [status, ethPrice]);
-
-  // Play price sound - called directly on price change
-  const playPriceSound = useCallback((direction: Direction, bps: number) => {
+  // Core sound playing function
+  const playSoundCore = useCallback((direction: Direction, bps: number) => {
     if (!audioContextRef.current) return;
     
     const ctx = audioContextRef.current;
     
-    // Try to resume if suspended
     if (ctx.state === "suspended") {
       ctx.resume();
-      return; // Skip this tick, will play on next
+      return;
     }
     
     const now = ctx.currentTime;
@@ -343,134 +637,209 @@ export default function Home() {
     }
   }, []);
 
-  // Calculate move size from bps
-  const getMoveSize = (bps: number): MoveSize => {
-    if (bps < 1) return "small";
-    if (bps <= 5) return "medium";
-    return "whale";
-  };
-
-  // Get flash duration based on move size
-  const getFlashDuration = (size: MoveSize): number => {
-    switch (size) {
-      case "small": return 150;
-      case "medium": return 500;
-      case "whale": return 1500;
-      default: return 300;
-    }
-  };
-
-  // Get motion blur duration based on move size
-  const getMotionBlurDuration = (size: MoveSize): number => {
-    switch (size) {
-      case "whale": return 200;
-      default: return 0;
-    }
-  };
-
-  useEffect(() => {
-    const connect = () => {
-      setStatus("connecting");
-      const ws = new WebSocket("wss://api.hyperliquid.xyz/ws");
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setStatus("connected");
-        ws.send(
-          JSON.stringify({
-            method: "subscribe",
-            subscription: { type: "allMids" },
-          })
-        );
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.channel === "allMids" && data.data?.mids) {
-            const ethMid = data.data.mids["ETH"];
-            if (ethMid) {
-              const price = parseFloat(ethMid);
-              
-              if (prevPriceRef.current !== null) {
-                const priceDiff = price - prevPriceRef.current;
-                const bps = Math.abs(priceDiff / prevPriceRef.current) * 10000;
-                const size = getMoveSize(bps);
-                const duration = getFlashDuration(size);
-                const motionBlurDuration = getMotionBlurDuration(size);
-                
-                if (flashTimeoutRef.current) {
-                  clearTimeout(flashTimeoutRef.current);
-                }
-                if (motionBlurTimeoutRef.current) {
-                  clearTimeout(motionBlurTimeoutRef.current);
-                }
-                
-                const direction: Direction = priceDiff > 0 ? "up" : "down";
-                
-                if (priceDiff !== 0) {
-                  setPriceDirection(direction);
-                  lastDirectionRef.current = direction;
-                  setMoveSize(size);
-                  flashFavicon(direction, duration);
-                  
-                  // Always try to play audio
-                  playPriceSound(direction, bps);
-                  
-                  if (size === "whale") {
-                    setIsSliding(true);
-                    motionBlurTimeoutRef.current = setTimeout(() => {
-                      setIsSliding(false);
-                    }, motionBlurDuration);
-                  }
-                  
-                  flashTimeoutRef.current = setTimeout(() => {
-                    setPriceDirection(null);
-                    setMoveSize(null);
-                  }, duration);
-                }
-              }
-              
-              prevPriceRef.current = price;
-              setEthPrice(price.toLocaleString("en-US", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              }));
-            }
+  // Throttled audio player - used for Binance mode
+  const playPriceSoundThrottled = useCallback((direction: Direction, bps: number) => {
+    const now = Date.now();
+    const timeSinceLastAudio = now - lastAudioTimeRef.current;
+    
+    // If we can play immediately
+    if (timeSinceLastAudio >= AUDIO_THROTTLE_MS) {
+      playSoundCore(direction, bps);
+      lastAudioTimeRef.current = now;
+      pendingAudioRef.current = null;
+      
+      if (audioThrottleTimeoutRef.current) {
+        clearTimeout(audioThrottleTimeoutRef.current);
+        audioThrottleTimeoutRef.current = null;
+      }
+    } else {
+      // Queue/update pending audio - keep the larger move
+      if (!pendingAudioRef.current || bps > pendingAudioRef.current.bps) {
+        pendingAudioRef.current = { direction, bps };
+      }
+      
+      // Schedule to play the pending audio
+      if (!audioThrottleTimeoutRef.current) {
+        const delay = AUDIO_THROTTLE_MS - timeSinceLastAudio;
+        audioThrottleTimeoutRef.current = setTimeout(() => {
+          if (pendingAudioRef.current) {
+            playSoundCore(pendingAudioRef.current.direction, pendingAudioRef.current.bps);
+            lastAudioTimeRef.current = Date.now();
+            pendingAudioRef.current = null;
           }
-        } catch (e) {
-          console.error("Error parsing message:", e);
-        }
-      };
+          audioThrottleTimeoutRef.current = null;
+        }, delay);
+      }
+    }
+  }, [playSoundCore]);
 
-      ws.onclose = () => {
-        setStatus("disconnected");
-        setTimeout(connect, 3000);
-      };
+  // Play price sound - chooses between throttled and direct based on source
+  const playPriceSound = useCallback((direction: Direction, bps: number, currentSource: PriceSource) => {
+    if (currentSource === "binance") {
+      playPriceSoundThrottled(direction, bps);
+    } else {
+      playSoundCore(direction, bps);
+    }
+  }, [playSoundCore, playPriceSoundThrottled]);
 
-      ws.onerror = () => {
-        ws.close();
-      };
+  // Flash favicon
+  const flashFavicon = useCallback((direction: Direction, duration: number) => {
+    if (!faviconLinkRef.current) return;
+
+    if (faviconTimeoutRef.current) {
+      clearTimeout(faviconTimeoutRef.current);
+    }
+
+    faviconLinkRef.current.href = direction === "up" ? FAVICON_UP : FAVICON_DOWN;
+
+    faviconTimeoutRef.current = setTimeout(() => {
+      if (faviconLinkRef.current) {
+        faviconLinkRef.current.href = FAVICON_DEFAULT;
+      }
+    }, duration);
+  }, []);
+
+  // Track max bps in current flash window for intensity
+  const maxBpsInWindowRef = useRef<number>(0);
+  const intensityResetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Handle price change from usePrice hook
+  const handlePriceChange = useCallback((newPrice: number, prevPrice: number) => {
+    const priceDiff = newPrice - prevPrice;
+    if (priceDiff === 0) return;
+
+    const bps = Math.abs(priceDiff / prevPrice) * 10000;
+    const direction: Direction = priceDiff > 0 ? "up" : "down";
+    
+    // Track max bps for intensity - ensures big moves show even with rapid updates
+    maxBpsInWindowRef.current = Math.max(maxBpsInWindowRef.current, bps);
+    const effectiveBps = maxBpsInWindowRef.current;
+    
+    const size = getMoveSize(effectiveBps);
+    const duration = getFlashDuration(size);
+    const motionBlurDuration = getMotionBlurDuration(size);
+    
+    // Clear previous flash timeout
+    if (flashTimeoutRef.current) {
+      clearTimeout(flashTimeoutRef.current);
+    }
+    if (motionBlurTimeoutRef.current) {
+      clearTimeout(motionBlurTimeoutRef.current);
+    }
+    
+    // Clear intensity reset timeout and set a new one
+    if (intensityResetTimeoutRef.current) {
+      clearTimeout(intensityResetTimeoutRef.current);
+    }
+    intensityResetTimeoutRef.current = setTimeout(() => {
+      maxBpsInWindowRef.current = 0;
+    }, duration);
+    
+    setPriceDirection(direction);
+    setMoveSize(size);
+    flashFavicon(direction, duration);
+    playPriceSound(direction, bps, source);
+    
+    if (size === "whale") {
+      setIsSliding(true);
+      motionBlurTimeoutRef.current = setTimeout(() => {
+        setIsSliding(false);
+      }, motionBlurDuration);
+    }
+    
+    flashTimeoutRef.current = setTimeout(() => {
+      setPriceDirection(null);
+      setMoveSize(null);
+    }, duration);
+  }, [getMoveSize, getFlashDuration, getMotionBlurDuration, flashFavicon, playPriceSound, source]);
+
+  // Use the main price hook
+  const { price: primaryPrice, formattedPrice, status } = usePrice(source, handlePriceChange);
+
+  // Use the shadow price hook (background feed)
+  const shadowPrice = useShadowPrice(shadowSource);
+
+  // Reset audio throttle state when source changes
+  useEffect(() => {
+    lastAudioTimeRef.current = 0;
+    pendingAudioRef.current = null;
+    maxBpsInWindowRef.current = 0;
+    if (audioThrottleTimeoutRef.current) {
+      clearTimeout(audioThrottleTimeoutRef.current);
+      audioThrottleTimeoutRef.current = null;
+    }
+    if (intensityResetTimeoutRef.current) {
+      clearTimeout(intensityResetTimeoutRef.current);
+      intensityResetTimeoutRef.current = null;
+    }
+  }, [source]);
+
+  // Initialize AudioContext and unlock on first user interaction
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext();
+      }
+      if (audioContextRef.current.state === "suspended") {
+        audioContextRef.current.resume().then(() => {
+          setAudioUnlocked(true);
+        });
+      } else {
+        setAudioUnlocked(true);
+      }
+      document.removeEventListener("click", unlockAudio);
+      document.removeEventListener("keydown", unlockAudio);
+      document.removeEventListener("touchstart", unlockAudio);
     };
 
-    connect();
+    document.addEventListener("click", unlockAudio);
+    document.addEventListener("keydown", unlockAudio);
+    document.addEventListener("touchstart", unlockAudio);
 
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-      if (flashTimeoutRef.current) {
-        clearTimeout(flashTimeoutRef.current);
-      }
-      if (faviconTimeoutRef.current) {
-        clearTimeout(faviconTimeoutRef.current);
-      }
-      if (motionBlurTimeoutRef.current) {
-        clearTimeout(motionBlurTimeoutRef.current);
+      document.removeEventListener("click", unlockAudio);
+      document.removeEventListener("keydown", unlockAudio);
+      document.removeEventListener("touchstart", unlockAudio);
+    };
+  }, []);
+
+  // Initialize favicon link element
+  useEffect(() => {
+    let link = document.querySelector<HTMLLinkElement>("link[rel*='icon']");
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "icon";
+      document.head.appendChild(link);
+    }
+    link.href = FAVICON_DEFAULT;
+    faviconLinkRef.current = link;
+
+    return () => {
+      if (faviconLinkRef.current) {
+        faviconLinkRef.current.href = FAVICON_DEFAULT;
       }
     };
-  }, [flashFavicon, playPriceSound]);
+  }, []);
+
+  // Update document title
+  useEffect(() => {
+    if (status === "connected" && formattedPrice) {
+      document.title = `$${formattedPrice} - ETH`;
+    } else {
+      document.title = "ETH Ticker";
+    }
+  }, [status, formattedPrice]);
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current);
+      if (faviconTimeoutRef.current) clearTimeout(faviconTimeoutRef.current);
+      if (motionBlurTimeoutRef.current) clearTimeout(motionBlurTimeoutRef.current);
+      if (audioThrottleTimeoutRef.current) clearTimeout(audioThrottleTimeoutRef.current);
+      if (intensityResetTimeoutRef.current) clearTimeout(intensityResetTimeoutRef.current);
+    };
+  }, []);
 
   // Get text color class based on direction and move size
   const getPriceColorClass = () => {
@@ -492,7 +861,7 @@ export default function Home() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-black">
-      {/* Motion blur styles */}
+      {/* Motion blur and gap alert styles */}
       <style jsx global>{`
         .motion-blur-active {
           animation: motion-blur-fade 200ms ease-out forwards;
@@ -506,32 +875,49 @@ export default function Home() {
             filter: blur(0px);
           }
         }
+
+        @keyframes pulse-yellow {
+          0%, 100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.5;
+          }
+        }
+
+        .animate-pulse-yellow {
+          animation: pulse-yellow 1s ease-in-out infinite;
+        }
       `}</style>
 
-      {/* WebSocket Status Indicator - Top Right Corner */}
-      <div className="fixed top-6 right-6 flex items-center gap-2 z-20">
-        <span className="text-white/30 text-xs tracking-widest uppercase">
-          WS
-        </span>
-        <span 
-          className={`h-2.5 w-2.5 rounded-full ${
-            status === "connected" 
-              ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" 
-              : status === "connecting" 
-              ? "bg-yellow-500 animate-pulse-slow" 
-              : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]"
-          }`}
-        />
-      </div>
+      {/* Top Bar */}
+      <div className="fixed top-6 left-0 right-0 px-6 flex items-center justify-between z-20">
+        {/* Source Selector */}
+        <SourceSelector source={source} onSourceChange={setSource} />
 
-      {/* Audio unlock hint - shows until user clicks */}
-      {!audioUnlocked && (
-        <div className="fixed top-6 left-6 z-20">
-          <span className="text-white/30 text-xs tracking-widest uppercase animate-pulse">
+        {/* Audio unlock hint */}
+        {!audioUnlocked && (
+          <span className="text-white/30 text-xs tracking-widest uppercase animate-pulse absolute left-1/2 -translate-x-1/2">
             Click anywhere for audio
           </span>
+        )}
+
+        {/* WebSocket Status */}
+        <div className="flex items-center gap-2">
+          <span className="text-white/30 text-xs tracking-widest uppercase">
+            WS
+          </span>
+          <span 
+            className={`h-2.5 w-2.5 rounded-full ${
+              status === "connected" 
+                ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" 
+                : status === "connecting" 
+                ? "bg-yellow-500 animate-pulse-slow" 
+                : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]"
+            }`}
+          />
         </div>
-      )}
+      </div>
 
       {/* Subtle grid background */}
       <div 
@@ -547,11 +933,12 @@ export default function Home() {
       
       {/* Content */}
       <div className="relative z-10 flex flex-col items-center gap-8">
-        {/* ETH Label */}
+        {/* ETH Label with Source Badge */}
         <div className="flex items-center gap-3">
           <span className="text-white/40 text-sm tracking-[0.3em] uppercase">
             ETH / USD
           </span>
+          <SourceBadge source={source} />
         </div>
 
         {/* Price Display with Digit Roller */}
@@ -565,9 +952,9 @@ export default function Home() {
           </span>
           
           {/* Digit Roller */}
-          {ethPrice ? (
+          {formattedPrice ? (
             <DigitRoller
-              value={ethPrice}
+              value={formattedPrice}
               colorClass={getPriceColorClass()}
               moveSize={moveSize}
               priceDirection={priceDirection}
@@ -590,9 +977,16 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Bottom attribution */}
-      <div className="fixed bottom-6 text-white/10 text-xs tracking-widest">
-        HYPERLIQUID
+      {/* Bottom section - Price Gap */}
+      <div className="fixed bottom-6 flex flex-col items-center gap-2">
+        <PriceGap 
+          primaryPrice={primaryPrice} 
+          shadowPrice={shadowPrice} 
+          primarySource={source} 
+        />
+        <div className="text-white/10 text-xs tracking-widest uppercase">
+          {source === "hyperliquid" ? "Hyperliquid" : "Binance"}
+        </div>
       </div>
     </main>
   );
