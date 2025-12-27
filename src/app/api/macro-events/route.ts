@@ -78,7 +78,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-01-15",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-01-15T13:30:00Z",
@@ -176,7 +176,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-02-12",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-02-12T13:30:00Z",
@@ -262,7 +262,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-03-12",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-03-12T13:30:00Z",
@@ -360,7 +360,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-04-10",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-04-10T12:30:00Z",
@@ -398,7 +398,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-05-13",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-05-13T12:30:00Z",
@@ -424,7 +424,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-06-11",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-06-11T12:30:00Z",
@@ -462,7 +462,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-07-10",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-07-10T12:30:00Z",
@@ -500,7 +500,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-08-12",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-08-12T12:30:00Z",
@@ -526,7 +526,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-09-10",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-09-10T12:30:00Z",
@@ -564,7 +564,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-10-14",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-10-14T12:30:00Z",
@@ -602,7 +602,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-11-12",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-11-12T13:30:00Z",
@@ -628,13 +628,13 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2025-12-10",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2025-12-10T13:30:00Z",
-    previous: 0.2,
-    forecast: 0.3,
-    actual: 0.3, // Released
+    previous: 2.6,
+    forecast: 2.7,
+    actual: 2.7, // Released
     impact: "high",
     unit: "%",
   },
@@ -690,7 +690,7 @@ const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
   },
   {
     id: "cpi-2026-01-14",
-    name: "CPI MoM",
+    name: "CPI YoY",
     currency: "USD",
     country: "US",
     date: "2026-01-14T13:30:00Z",

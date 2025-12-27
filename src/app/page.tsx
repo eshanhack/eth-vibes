@@ -1614,38 +1614,49 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
       
       {/* Countdown / Actual */}
       <td className="py-2.5 px-3 border-r border-neutral-800/30 text-center min-w-[130px]">
-        {isUpcoming ? (
-          <div className="flex flex-col items-center">
-            <span className="text-cyan-400 text-sm font-mono tabular-nums tracking-wider">
-              {formatCountdown(timeUntil)}
-            </span>
-            <span className="text-neutral-600 text-[8px] uppercase">Until Release</span>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center">
-            {hasActual ? (
-              <>
-                <span className="text-white text-sm font-bold tabular-nums">
-                  {event.actual}{event.unit}
-                </span>
-                <div className="flex gap-2 text-[9px] text-neutral-500">
-                  <span>F: {event.forecast ?? "—"}{event.unit}</span>
-                  <span>P: {event.previous ?? "—"}{event.unit}</span>
+        {(() => {
+          // Format print value with 1 decimal place
+          const formatPrint = (val: number | null) => {
+            if (val === null) return "—";
+            // For large numbers like NFP (thousands), show no decimals
+            if (Math.abs(val) >= 100) return val.toFixed(0);
+            // For percentages and small numbers, show 1 decimal
+            return val.toFixed(1);
+          };
+          
+          return isUpcoming ? (
+            <div className="flex flex-col items-center">
+              <span className="text-cyan-400 text-sm font-mono tabular-nums tracking-wider">
+                {formatCountdown(timeUntil)}
+              </span>
+              <span className="text-neutral-600 text-[8px] uppercase">Until Release</span>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center">
+              {hasActual ? (
+                <>
+                  <span className="text-white text-sm font-bold tabular-nums">
+                    {formatPrint(event.actual)}{event.unit}
+                  </span>
+                  <div className="flex gap-2 text-[9px] text-neutral-500">
+                    <span>F: {formatPrint(event.forecast)}{event.unit}</span>
+                    <span>P: {formatPrint(event.previous)}{event.unit}</span>
+                  </div>
+                  <span className="text-neutral-600 text-[8px] mt-0.5">
+                    {new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                  </span>
+                </>
+              ) : (
+                <div className="flex flex-col items-center">
+                  <span className="text-amber-400 text-[10px] font-medium">RELEASED</span>
+                  <span className="text-neutral-600 text-[8px]">
+                    {new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                  </span>
                 </div>
-                <span className="text-neutral-600 text-[8px] mt-0.5">
-                  {new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                </span>
-              </>
-            ) : (
-              <div className="flex flex-col items-center">
-                <span className="text-amber-400 text-[10px] font-medium">RELEASED</span>
-                <span className="text-neutral-600 text-[8px]">
-                  {new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                </span>
-              </div>
-            )}
-          </div>
-        )}
+              )}
+            </div>
+          );
+        })()}
       </td>
       
       {/* Price Windows */}
