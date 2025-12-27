@@ -1399,9 +1399,13 @@ function useMacroEvents(asset: Asset) {
 // Macro Event Row Component
 function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: number }) {
   const timeUntil = event.timestamp - now;
+  const timeSinceRelease = now - event.timestamp;
   const isUpcoming = event.status === "upcoming";
   const isTracking = event.status === "tracking";
   const hasActual = event.actual !== null;
+  
+  // Historical event = released more than 1 hour ago without baseline capture
+  const isHistorical = !isUpcoming && timeSinceRelease > 60 * 60 * 1000 && event.baselinePrice === null;
   
   return (
     <motion.tr
@@ -1411,7 +1415,7 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
       exit={{ opacity: 0 }}
       className={`border-b border-neutral-800/30 ${
         isTracking ? "bg-amber-500/5" : ""
-      }`}
+      } ${isHistorical ? "opacity-60" : ""}`}
     >
       {/* Event Name */}
       <td className="py-2.5 px-3 border-r border-neutral-800/30">
@@ -1422,7 +1426,7 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
           <span className="text-neutral-500 text-[9px]">
             {event.currency} • {event.impact}
           </span>
-    </div>
+        </div>
       </td>
       
       {/* Countdown / Actual */}
@@ -1459,15 +1463,15 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
       </td>
       
       {/* Price Windows */}
-      {MACRO_WINDOWS.map(({ key, label }) => {
+      {MACRO_WINDOWS.map(({ key }) => {
         const window = event.priceWindows[key];
-        const hasValue = window.change !== null;
+        const hasValue = window.change !== null && event.baselinePrice !== null;
         const isPositive = (window.change ?? 0) > 0;
         const isLocked = window.locked;
         
         return (
           <td key={key} className="py-2.5 px-2 border-r border-neutral-800/30 text-center min-w-[70px]">
-            {isUpcoming ? (
+            {isUpcoming || isHistorical ? (
               <span className="text-neutral-700 text-[10px]">—</span>
             ) : hasValue ? (
               <div className="flex flex-col items-center">
