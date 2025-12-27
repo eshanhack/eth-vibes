@@ -256,49 +256,39 @@ export async function saveMacroEventPrices(event: {
     return false;
   }
 
-  const payload = {
-    id: event.id,
-    asset: event.asset,
-    baseline_price: event.baselinePrice,
-    window_1m: event.priceWindows['1m'],
-    window_10m: event.priceWindows['10m'],
-    window_30m: event.priceWindows['30m'],
-    window_1h: event.priceWindows['1h'],
-    updated_at: new Date().toISOString(),
-  };
-
-  // Try insert first, then update if exists
-  const { data: existing } = await supabase
-    .from('macro_events')
-    .select('id')
-    .eq('id', event.id)
-    .eq('asset', event.asset)
-    .single();
-
-  let error;
-  if (existing) {
-    // Update existing record
-    const result = await supabase
+  try {
+    // First, delete any existing record
+    await supabase
       .from('macro_events')
-      .update(payload)
+      .delete()
       .eq('id', event.id)
       .eq('asset', event.asset);
-    error = result.error;
-  } else {
-    // Insert new record
-    const result = await supabase
-      .from('macro_events')
-      .insert(payload);
-    error = result.error;
-  }
 
-  if (error) {
-    console.error('[Supabase] Error saving macro event:', error.message, error.details);
+    // Then insert the new record
+    const { error } = await supabase
+      .from('macro_events')
+      .insert({
+        id: event.id,
+        asset: event.asset,
+        baseline_price: event.baselinePrice,
+        window_1m: event.priceWindows['1m'],
+        window_10m: event.priceWindows['10m'],
+        window_30m: event.priceWindows['30m'],
+        window_1h: event.priceWindows['1h'],
+        updated_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      console.error('[Supabase] Error inserting macro event:', error.message, error.code);
+      return false;
+    }
+
+    console.log(`[Supabase] Saved macro event ${event.id} for ${event.asset}`);
+    return true;
+  } catch (err) {
+    console.error('[Supabase] Exception saving macro event:', err);
     return false;
   }
-
-  console.log(`[Supabase] Saved macro event ${event.id} for ${event.asset}`);
-  return true;
 }
 
 // Convert stored macro event to app format
