@@ -1532,7 +1532,7 @@ function useMacroEvents(asset: Asset) {
 }
 
 // Calculate impact score for macro event based on price changes
-function calculateMacroImpact(event: MacroEventWithTracking): { score: number; direction: "positive" | "negative" | "neutral" } {
+function calculateMacroImpact(event: MacroEventWithTracking): { score: number; direction: "positive" | "negative" | "neutral"; maxMove: number } {
   const windows = event.priceWindows;
   
   // Collect all valid changes with weights (favor earlier timeframes)
@@ -1541,19 +1541,22 @@ function calculateMacroImpact(event: MacroEventWithTracking): { score: number; d
   let totalWeight = 0;
   let positiveCount = 0;
   let negativeCount = 0;
+  let maxMove = 0;
   
   for (const key of ["1m", "10m", "30m", "1h"] as const) {
     const change = windows[key].change;
     if (change !== null && windows[key].locked) {
       const weight = weights[key];
-      weightedSum += Math.abs(change) * weight;
+      const absChange = Math.abs(change);
+      weightedSum += absChange * weight;
       totalWeight += weight;
+      maxMove = Math.max(maxMove, absChange);
       if (change > 0) positiveCount++;
       if (change < 0) negativeCount++;
     }
   }
   
-  if (totalWeight === 0) return { score: 0, direction: "neutral" };
+  if (totalWeight === 0) return { score: 0, direction: "neutral", maxMove: 0 };
   
   // Average magnitude weighted by timeframe
   const avgMagnitude = weightedSum / totalWeight;
@@ -1561,10 +1564,10 @@ function calculateMacroImpact(event: MacroEventWithTracking): { score: number; d
   // Direction is based on majority of timeframes
   const direction = positiveCount > negativeCount ? "positive" : negativeCount > positiveCount ? "negative" : "neutral";
   
-  // Score: 0-1 scale based on magnitude (1% move = 0.5 score, 2%+ = 1.0)
-  const score = Math.min(avgMagnitude / 2, 1);
+  // Score: 0-1 scale based on magnitude (2% move = 0.5 score, 4%+ = 1.0)
+  const score = Math.min(avgMagnitude / 4, 1);
   
-  return { score, direction };
+  return { score, direction, maxMove };
 }
 
 // Macro Event Row Component
@@ -1579,17 +1582,19 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
   const isHistorical = !isUpcoming && timeSinceRelease > 60 * 60 * 1000 && event.baselinePrice === null;
   
   // Calculate impact score for row shading
-  const { score: impactScore, direction: impactDirection } = useMemo(
+  const { score: impactScore, direction: impactDirection, maxMove } = useMemo(
     () => calculateMacroImpact(event),
     [event]
   );
   
-  // Row background color based on impact
+  // Row background color based on impact (only show for moves > 1%)
   const getRowStyle = (): React.CSSProperties => {
-    if (isUpcoming || isHistorical || impactScore === 0) return {};
+    // Only shade if max move exceeds 1%
+    if (isUpcoming || isHistorical || maxMove < 1) return {};
     
-    // Opacity scales with impact score (0.05 to 0.25)
-    const opacity = 0.05 + impactScore * 0.2;
+    // Opacity scales with impact score (0.08 to 0.30 for visible shading)
+    // Starts at 1% move, maxes out around 3-4%
+    const opacity = 0.08 + impactScore * 0.22;
     
     if (impactDirection === "positive") {
       return { backgroundColor: `rgba(34, 197, 94, ${opacity})` }; // green-500
