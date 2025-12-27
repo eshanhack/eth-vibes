@@ -1,21 +1,24 @@
 import { NextResponse } from "next/server";
 
-// Finnhub Economic Calendar API (free tier available)
-const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
+// Twelve Data Economic Calendar API (free tier: 800 calls/day)
+const TWELVEDATA_API_KEY = process.env.TWELVEDATA_API_KEY;
 
-interface FinnhubEvent {
-  actual: number | null;
-  country: string;
-  estimate: number | null;
+interface TwelveDataEvent {
   event: string;
-  impact: string;
-  prev: number | null;
+  country: string;
+  actual: string | null;
+  previous: string | null;
+  consensus: string | null;
+  date: string;
   time: string;
-  unit: string;
+  impact: string;
+  currency: string;
 }
 
-interface FinnhubResponse {
-  economicCalendar: FinnhubEvent[];
+interface TwelveDataResponse {
+  data?: TwelveDataEvent[];
+  status?: string;
+  message?: string;
 }
 
 // High-impact event keywords
@@ -27,8 +30,9 @@ const HIGH_IMPACT_KEYWORDS = [
   "Nonfarm Payrolls",
   "Employment Change",
   "FOMC",
-  "Interest Rate Decision",
-  "Fed Interest Rate",
+  "Interest Rate",
+  "Fed Funds",
+  "Federal Funds",
   "GDP",
   "Gross Domestic Product",
   "PCE",
@@ -40,49 +44,61 @@ const HIGH_IMPACT_KEYWORDS = [
   "Core CPI",
   "Core PCE",
   "Initial Jobless Claims",
+  "Jobless Claims",
   "PPI",
   "Producer Price",
+  "Housing Starts",
+  "Durable Goods",
 ];
 
 // Filter for high-impact events
-function isHighImpact(event: FinnhubEvent): boolean {
+function isHighImpact(event: TwelveDataEvent): boolean {
   const eventLower = event.event.toLowerCase();
   return (
     HIGH_IMPACT_KEYWORDS.some((keyword) =>
       eventLower.includes(keyword.toLowerCase())
     ) ||
     event.impact === "high" ||
-    event.impact === "medium"
+    event.impact === "High"
   );
+}
+
+// Parse numeric value from string (handles "0.3%", "227K", etc.)
+function parseValue(val: string | null): number | null {
+  if (!val || val === "" || val === "-") return null;
+  const cleaned = val.replace(/[%KMB,]/g, "").trim();
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? null : num;
+}
+
+// Extract unit from value string
+function extractUnit(val: string | null): string {
+  if (!val) return "";
+  if (val.includes("%")) return "%";
+  if (val.includes("K")) return "K";
+  if (val.includes("M")) return "M";
+  if (val.includes("B")) return "B";
+  return "";
 }
 
 export async function GET() {
   try {
     // Debug: Check if API key is configured
-    const hasApiKey = !!FINNHUB_API_KEY;
-    const keyLength = FINNHUB_API_KEY?.length || 0;
+    const hasApiKey = !!TWELVEDATA_API_KEY;
+    const keyLength = TWELVEDATA_API_KEY?.length || 0;
 
-    if (!FINNHUB_API_KEY) {
+    if (!TWELVEDATA_API_KEY) {
       // Return demo data if no API key
       return NextResponse.json({
         events: getDemoEvents(),
-        source: "Demo Data (FINNHUB_API_KEY not configured)",
+        source: "Demo Data (TWELVEDATA_API_KEY not configured)",
         isDemo: true,
         debug: { hasApiKey, keyLength },
       });
     }
 
-    // Fetch events for the next 7 days and past 3 days
-    const today = new Date();
-    const pastDate = new Date(today);
-    pastDate.setDate(pastDate.getDate() - 3);
-    const futureDate = new Date(today);
-    futureDate.setDate(futureDate.getDate() + 7);
-
-    const fromStr = pastDate.toISOString().split("T")[0];
-    const toStr = futureDate.toISOString().split("T")[0];
-
-    const url = `https://finnhub.io/api/v1/calendar/economic?from=${fromStr}&to=${toStr}&token=${FINNHUB_API_KEY}`;
+    // Twelve Data uses a single endpoint that returns upcoming events
+    const url = `https://api.twelvedata.com/economic_calendar?country=United States&apikey=${TWELVEDATA_API_KEY}`;
 
     const response = await fetch(url, {
       cache: "no-store",
@@ -103,10 +119,24 @@ export async function GET() {
       });
     }
 
-    const data: FinnhubResponse = await response.json();
+    const data: TwelveDataResponse = await response.json();
+
+    // Check for API error response
+    if (data.status === "error") {
+      return NextResponse.json({
+        events: getDemoEvents(),
+        source: `Demo Data (${data.message || "API Error"})`,
+        isDemo: true,
+        debug: {
+          hasApiKey: true,
+          keyLength,
+          apiMessage: data.message,
+        },
+      });
+    }
 
     // Check if API returned valid data
-    if (!data.economicCalendar || !Array.isArray(data.economicCalendar)) {
+    if (!data.data || !Array.isArray(data.data)) {
       return NextResponse.json({
         events: getDemoEvents(),
         source: "Demo Data (Invalid API response)",
@@ -120,24 +150,33 @@ export async function GET() {
     }
 
     // Filter for high-impact US events
-    const highImpactEvents = data.economicCalendar
-      .filter((e) => e.country === "US" && isHighImpact(e))
+    const highImpactEvents = data.data
+      .filter((e) => isHighImpact(e))
       .map((e) => {
-        // Parse the timestamp - Finnhub uses "YYYY-MM-DD HH:MM:SS" format
-        const timestamp = new Date(e.time.replace(" ", "T") + "Z").getTime();
-        
+        // Parse the timestamp - Twelve Data uses separate date and time fields
+        // Date format: "2024-01-15", Time format: "08:30:00" or "All Day"
+        let timestamp: number;
+        if (e.time && e.time !== "All Day") {
+          timestamp = new Date(`${e.date}T${e.time}Z`).getTime();
+        } else {
+          // Default to 8:30 AM ET (13:30 UTC) for "All Day" events
+          timestamp = new Date(`${e.date}T13:30:00Z`).getTime();
+        }
+
+        const unit = extractUnit(e.actual) || extractUnit(e.consensus) || extractUnit(e.previous);
+
         return {
-          id: `${e.time}-${e.event}`.replace(/[\s:]+/g, "-").toLowerCase(),
+          id: `${e.date}-${e.event}`.replace(/[\s:]+/g, "-").toLowerCase(),
           name: e.event,
-          currency: "USD",
+          currency: e.currency || "USD",
           country: e.country,
           date: new Date(timestamp).toISOString(),
           timestamp,
-          previous: e.prev,
-          forecast: e.estimate,
-          actual: e.actual,
-          impact: e.impact,
-          unit: e.unit || "",
+          previous: parseValue(e.previous),
+          forecast: parseValue(e.consensus),
+          actual: parseValue(e.actual),
+          impact: e.impact?.toLowerCase() || "medium",
+          unit,
         };
       })
       .sort((a, b) => a.timestamp - b.timestamp)
@@ -145,12 +184,12 @@ export async function GET() {
 
     return NextResponse.json({
       events: highImpactEvents,
-      source: "Finnhub",
+      source: "Twelve Data",
       isDemo: false,
       debug: {
         hasApiKey: true,
         keyLength,
-        totalEvents: data.economicCalendar.length,
+        totalEvents: data.data.length,
         filteredEvents: highImpactEvents.length,
       },
     });
@@ -163,8 +202,8 @@ export async function GET() {
       source: "Demo Data (API Error)",
       isDemo: true,
       debug: {
-        hasApiKey: !!FINNHUB_API_KEY,
-        keyLength: FINNHUB_API_KEY?.length || 0,
+        hasApiKey: !!TWELVEDATA_API_KEY,
+        keyLength: TWELVEDATA_API_KEY?.length || 0,
         error: error instanceof Error ? error.message : "Unknown error",
       },
     });
