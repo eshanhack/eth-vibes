@@ -697,7 +697,11 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
           const rawTweet = rawTweets.find(t => t.id === tweet.id);
           if (rawTweet) {
             cachedMap?.set(tweet.id, {
-              ...rawTweet,
+              id: rawTweet.id,
+              text: rawTweet.text,
+              createdAt: rawTweet.createdAt,
+              timestamp: rawTweet.timestamp,
+              url: rawTweet.url || null,
               ...priceData,
             });
           }
