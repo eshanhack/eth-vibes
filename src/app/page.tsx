@@ -1176,6 +1176,464 @@ interface SortConfig {
   direction: "desc" | "asc";
 }
 
+// ========== Macro Alpha Table Component ==========
+
+interface MacroEvent {
+  id: string;
+  name: string;
+  currency: string;
+  country: string;
+  date: string;
+  timestamp: number;
+  previous: number | null;
+  forecast: number | null;
+  actual: number | null;
+  impact: string;
+  unit: string;
+}
+
+interface MacroEventWithTracking extends MacroEvent {
+  baselinePrice: number | null;
+  priceWindows: {
+    "1m": { price: number | null; change: number | null; locked: boolean };
+    "10m": { price: number | null; change: number | null; locked: boolean };
+    "30m": { price: number | null; change: number | null; locked: boolean };
+    "1h": { price: number | null; change: number | null; locked: boolean };
+  };
+  status: "upcoming" | "released" | "tracking" | "complete";
+}
+
+// Format countdown time
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return "00:00:00";
+  
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  
+  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+}
+
+// Format time ago
+function formatTimeAgo(ms: number): string {
+  const absMs = Math.abs(ms);
+  const minutes = Math.floor(absMs / 60000);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) return `${hours}h ${minutes % 60}m ago`;
+  return `${minutes}m ago`;
+}
+
+// Macro window config
+const MACRO_WINDOWS = [
+  { key: "1m" as const, ms: 60 * 1000, label: "1M" },
+  { key: "10m" as const, ms: 10 * 60 * 1000, label: "10M" },
+  { key: "30m" as const, ms: 30 * 60 * 1000, label: "30M" },
+  { key: "1h" as const, ms: 60 * 60 * 1000, label: "1H" },
+];
+
+function useMacroEvents(asset: Asset) {
+  const [events, setEvents] = useState<MacroEventWithTracking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isDemo, setIsDemo] = useState(false);
+  const currentAssetRef = useRef(asset);
+
+  // Fetch current price from Binance
+  const fetchCurrentPrice = useCallback(async () => {
+    const config = ASSET_CONFIG[asset];
+    const symbol = config.binanceSymbol.toUpperCase();
+    try {
+      const response = await fetch(
+        `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`
+      );
+      if (!response.ok) return null;
+      const data = await response.json();
+      return parseFloat(data.price);
+    } catch {
+      return null;
+    }
+  }, [asset]);
+
+  // Initial fetch
+  useEffect(() => {
+    currentAssetRef.current = asset;
+    
+    async function fetchEvents() {
+      setLoading(true);
+      try {
+        const response = await fetch("/api/macro-events");
+        const data = await response.json();
+        
+        if (data.isDemo) setIsDemo(true);
+        
+        const now = Date.now();
+        const eventsWithTracking: MacroEventWithTracking[] = data.events.map(
+          (event: MacroEvent) => {
+            const isReleased = event.actual !== null || event.timestamp <= now;
+            return {
+              ...event,
+              baselinePrice: null,
+              priceWindows: {
+                "1m": { price: null, change: null, locked: false },
+                "10m": { price: null, change: null, locked: false },
+                "30m": { price: null, change: null, locked: false },
+                "1h": { price: null, change: null, locked: false },
+              },
+              status: isReleased ? "released" : "upcoming",
+            };
+          }
+        );
+        
+        setEvents(eventsWithTracking);
+      } catch (error) {
+        console.error("Failed to fetch macro events:", error);
+      }
+      setLoading(false);
+    }
+    
+    fetchEvents();
+  }, [asset]);
+
+  // Update countdowns and track prices every second
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const now = Date.now();
+      
+      setEvents((prevEvents) => {
+        let needsPriceUpdate = false;
+        
+        const updated = prevEvents.map((event) => {
+          // Skip if complete
+          if (event.status === "complete") return event;
+          
+          // Check if just released
+          if (event.status === "upcoming" && event.timestamp <= now) {
+            needsPriceUpdate = true;
+            return { ...event, status: "released" as const };
+          }
+          
+          // Check if tracking windows need updating
+          if (event.status === "released" || event.status === "tracking") {
+            const timeSinceRelease = now - event.timestamp;
+            let hasUnlockedWindows = false;
+            
+            const newWindows = { ...event.priceWindows };
+            for (const window of MACRO_WINDOWS) {
+              if (!newWindows[window.key].locked && timeSinceRelease >= window.ms) {
+                // Window time has passed but not locked yet - needs price fetch
+                needsPriceUpdate = true;
+              }
+              if (!newWindows[window.key].locked) {
+                hasUnlockedWindows = true;
+              }
+            }
+            
+            // Check if all windows are locked
+            if (!hasUnlockedWindows && event.baselinePrice !== null) {
+              return { ...event, status: "complete" as const };
+            }
+            
+            if (event.baselinePrice !== null) {
+              return { ...event, status: "tracking" as const };
+            }
+          }
+          
+          return event;
+        });
+        
+        return updated;
+      });
+      
+      // Fetch prices for events that need it
+      const currentPrice = await fetchCurrentPrice();
+      if (currentPrice === null) return;
+      
+      setEvents((prevEvents) => {
+        const now = Date.now();
+        
+        return prevEvents.map((event) => {
+          // Set baseline price when event releases
+          if (
+            (event.status === "released" || event.status === "tracking") &&
+            event.baselinePrice === null
+          ) {
+            return { ...event, baselinePrice: currentPrice, status: "tracking" as const };
+          }
+          
+          // Update unlocked windows
+          if (event.status === "tracking" && event.baselinePrice !== null) {
+            const timeSinceRelease = now - event.timestamp;
+            const newWindows = { ...event.priceWindows };
+            let changed = false;
+            
+            for (const window of MACRO_WINDOWS) {
+              if (!newWindows[window.key].locked) {
+                const change = ((currentPrice - event.baselinePrice) / event.baselinePrice) * 100;
+                newWindows[window.key] = {
+                  price: currentPrice,
+                  change,
+                  locked: timeSinceRelease >= window.ms,
+                };
+                changed = true;
+              }
+            }
+            
+            if (changed) {
+              return { ...event, priceWindows: newWindows };
+            }
+          }
+          
+          return event;
+        });
+      });
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [fetchCurrentPrice]);
+
+  return { events, loading, isDemo };
+}
+
+// Macro Event Row Component
+function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: number }) {
+  const timeUntil = event.timestamp - now;
+  const isUpcoming = event.status === "upcoming";
+  const isTracking = event.status === "tracking";
+  const hasActual = event.actual !== null;
+  
+  return (
+    <motion.tr
+      layout
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className={`border-b border-neutral-800/30 ${
+        isTracking ? "bg-amber-500/5" : ""
+      }`}
+    >
+      {/* Event Name */}
+      <td className="py-2.5 px-3 border-r border-neutral-800/30">
+        <div className="flex flex-col">
+          <span className="text-white text-[11px] font-medium leading-tight">
+            {event.name}
+          </span>
+          <span className="text-neutral-500 text-[9px]">
+            {event.currency} • {event.impact}
+          </span>
+        </div>
+      </td>
+      
+      {/* Countdown / Actual */}
+      <td className="py-2.5 px-3 border-r border-neutral-800/30 text-center min-w-[120px]">
+        {isUpcoming ? (
+          <div className="flex flex-col items-center">
+            <span className="text-cyan-400 text-sm font-mono tabular-nums tracking-wider">
+              {formatCountdown(timeUntil)}
+            </span>
+            <span className="text-neutral-600 text-[8px] uppercase">Until Release</span>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center">
+            {hasActual ? (
+              <>
+                <span className="text-white text-sm font-bold tabular-nums">
+                  {event.actual}{event.unit}
+                </span>
+                <div className="flex gap-2 text-[9px] text-neutral-500">
+                  <span>F: {event.forecast ?? "—"}{event.unit}</span>
+                  <span>P: {event.previous ?? "—"}{event.unit}</span>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col items-center">
+                <span className="text-amber-400 text-[10px] font-medium">RELEASED</span>
+                <span className="text-neutral-600 text-[8px]">
+                  {formatTimeAgo(timeUntil)}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+      </td>
+      
+      {/* Price Windows */}
+      {MACRO_WINDOWS.map(({ key, label }) => {
+        const window = event.priceWindows[key];
+        const hasValue = window.change !== null;
+        const isPositive = (window.change ?? 0) > 0;
+        const isLocked = window.locked;
+        
+        return (
+          <td key={key} className="py-2.5 px-2 border-r border-neutral-800/30 text-center min-w-[70px]">
+            {isUpcoming ? (
+              <span className="text-neutral-700 text-[10px]">—</span>
+            ) : hasValue ? (
+              <div className="flex flex-col items-center">
+                <span
+                  className={`text-[11px] font-bold tabular-nums ${
+                    isPositive ? "text-emerald-400" : "text-red-400"
+                  } ${!isLocked ? "animate-pulse" : ""}`}
+                  style={{
+                    textShadow: isLocked && Math.abs(window.change!) > 0.5
+                      ? `0 0 8px ${isPositive ? "rgba(52, 211, 153, 0.5)" : "rgba(239, 68, 68, 0.5)"}`
+                      : undefined,
+                  }}
+                >
+                  {isPositive ? "+" : ""}{window.change!.toFixed(2)}%
+                </span>
+                {isLocked && (
+                  <span className="text-[7px] text-neutral-600 uppercase">Locked</span>
+                )}
+              </div>
+            ) : (
+              <motion.div
+                className="flex items-center justify-center gap-1"
+                animate={{ opacity: [0.5, 1, 0.5] }}
+                transition={{ duration: 1.5, repeat: Infinity }}
+              >
+                <div className="w-1.5 h-1.5 bg-amber-500 rounded-full" />
+                <span className="text-amber-500/60 text-[9px]">WAIT</span>
+              </motion.div>
+            )}
+          </td>
+        );
+      })}
+    </motion.tr>
+  );
+}
+
+// Main Macro Alpha Table Component
+interface MacroAlphaTableProps {
+  selectedAsset?: Asset;
+}
+
+function MacroAlphaTable({ selectedAsset = "ETH" }: MacroAlphaTableProps) {
+  const { events, loading, isDemo } = useMacroEvents(selectedAsset);
+  const [now, setNow] = useState(Date.now());
+  
+  // Update "now" every second for countdown
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+  
+  // Filter to show upcoming and recent events
+  const visibleEvents = useMemo(() => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000; // Past 24 hours
+    return events
+      .filter((e) => e.timestamp > cutoff || e.status === "tracking")
+      .sort((a, b) => a.timestamp - b.timestamp);
+  }, [events]);
+
+  if (loading) {
+    return (
+      <div className="w-full bg-black border border-neutral-800 rounded-lg overflow-hidden">
+        <div className="flex items-center justify-between py-2 px-3 border-b border-neutral-700 bg-neutral-900/30">
+          <span className="text-cyan-500 font-bold text-sm tracking-wider">MACRO ALPHA</span>
+        </div>
+        <div className="p-8 flex items-center justify-center">
+          <div className="flex items-center gap-2 text-neutral-500">
+            <motion.div
+              className="w-2 h-2 bg-cyan-500 rounded-full"
+              animate={{ opacity: [0.3, 1, 0.3] }}
+              transition={{ duration: 1, repeat: Infinity }}
+            />
+            <span className="text-sm">Loading economic calendar...</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full bg-black border border-neutral-800 rounded-lg overflow-hidden">
+      {/* Title Bar */}
+      <div className="flex items-center justify-between py-2 px-3 border-b border-neutral-700 bg-neutral-900/30">
+        <div className="flex items-center gap-3">
+          <span className="text-cyan-500 font-bold text-sm tracking-wider">MACRO ALPHA</span>
+          <span className="text-white font-bold text-sm">ECON CALENDAR</span>
+          {isDemo && (
+            <span className="px-1.5 py-0.5 bg-yellow-500/20 text-yellow-400 text-[9px] font-bold rounded border border-yellow-500/30">
+              DEMO
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-neutral-500 text-xs uppercase">{selectedAsset}/USD</span>
+          <span className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 text-[10px] font-bold rounded border border-cyan-500/30">
+            LIVE TRACKING
+          </span>
+        </div>
+      </div>
+      
+      {/* Table */}
+      <div className="overflow-x-auto scrollbar-thin">
+        <table className="w-full text-left">
+          <thead>
+            <tr className="border-b border-neutral-700 bg-neutral-900/50">
+              <th className="py-2 px-3 text-neutral-400 text-[10px] font-bold uppercase tracking-wider border-r border-neutral-800/30">
+                Event
+              </th>
+              <th className="py-2 px-3 text-neutral-400 text-[10px] font-bold uppercase tracking-wider border-r border-neutral-800/30 text-center">
+                Time / Actual
+              </th>
+              {MACRO_WINDOWS.map(({ label }) => (
+                <th
+                  key={label}
+                  className="py-2 px-2 text-neutral-400 text-[10px] font-bold uppercase tracking-wider border-r border-neutral-800/30 text-center"
+                >
+                  {label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            <AnimatePresence>
+              {visibleEvents.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-8 text-center text-neutral-500 text-sm">
+                    No upcoming macro events
+                  </td>
+                </tr>
+              ) : (
+                visibleEvents.map((event) => (
+                  <MacroEventRow key={event.id} event={event} now={now} />
+                ))
+              )}
+            </AnimatePresence>
+          </tbody>
+        </table>
+      </div>
+      
+      {/* Footer */}
+      <div className="border-t border-neutral-700 py-2 px-3 flex items-center justify-between bg-neutral-900/50">
+        <span className="text-neutral-500 text-[10px] font-mono">
+          {visibleEvents.length} Events
+        </span>
+        <div className="flex items-center gap-3 text-[9px]">
+          <span className="flex items-center gap-1">
+            <span className="text-cyan-400">⏱</span>
+            <span className="text-neutral-600">COUNTDOWN</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <motion.div
+              className="w-1.5 h-1.5 bg-amber-500 rounded-full"
+              animate={{ opacity: [0.3, 1, 0.3] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+            />
+            <span className="text-neutral-600">TRACKING</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="text-emerald-400">✓</span>
+            <span className="text-neutral-600">LOCKED</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // News Sentiment Feed Component - Bloomberg Terminal Style with Multi-Timeframe Table
 interface NewsSentimentFeedProps {
   selectedAsset?: Asset;
@@ -1984,8 +2442,14 @@ export default function Home() {
           </div>
         </div>
 
-        {/* News Sentiment Feed Section */}
-        <NewsSentimentFeed selectedAsset={asset} />
+        {/* Alpha Tables Section - Side by Side on Large Screens */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 px-4 max-w-[1800px] mx-auto">
+          {/* Macro Alpha Table */}
+          <MacroAlphaTable selectedAsset={asset} />
+          
+          {/* News Sentiment Feed */}
+          <NewsSentimentFeed selectedAsset={asset} />
+        </div>
       </div>
 
       {/* Bottom attribution - Fixed */}
