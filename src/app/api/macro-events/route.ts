@@ -742,16 +742,16 @@ export async function GET() {
   try {
     const now = Date.now();
     
-    // Filter events: show past 7 days and next 30 days
-    const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
-    const thirtyDaysFromNow = now + 30 * 24 * 60 * 60 * 1000;
+    // Filter events: show past 30 days and next 60 days
+    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+    const sixtyDaysFromNow = now + 60 * 24 * 60 * 60 * 1000;
 
     const events: MacroEvent[] = ECONOMIC_CALENDAR_2025
       .map((event) => ({
         ...event,
         timestamp: new Date(event.date).getTime(),
       }))
-      .filter((event) => event.timestamp >= sevenDaysAgo && event.timestamp <= thirtyDaysFromNow)
+      .filter((event) => event.timestamp >= thirtyDaysAgo && event.timestamp <= sixtyDaysFromNow)
       .sort((a, b) => a.timestamp - b.timestamp);
 
     return NextResponse.json({

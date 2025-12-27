@@ -1422,7 +1422,7 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
           <span className="text-neutral-500 text-[9px]">
             {event.currency} • {event.impact}
           </span>
-        </div>
+    </div>
       </td>
       
       {/* Countdown / Actual */}
@@ -1519,9 +1519,9 @@ function MacroAlphaTable({ selectedAsset = "ETH" }: MacroAlphaTableProps) {
     return () => clearInterval(interval);
   }, []);
   
-  // Filter to show upcoming and recent events (past 7 days + next 30 days)
+  // Filter to show upcoming and recent events (past 30 days + next 60 days)
   const visibleEvents = useMemo(() => {
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // Past 7 days
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000; // Past 30 days
     return events
       .filter((e) => e.timestamp > cutoff || e.status === "tracking")
       .sort((a, b) => a.timestamp - b.timestamp);
