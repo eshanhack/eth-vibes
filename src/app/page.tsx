@@ -2,6 +2,16 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { motion, LayoutGroup, AnimatePresence } from "framer-motion";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+} from "recharts";
 import { 
   getStoredTweetsForAsset, 
   saveTweetImpact, 
@@ -2179,6 +2189,312 @@ function NewsSentimentFeed({ selectedAsset = "ETH" }: NewsSentimentFeedProps) {
   );
 }
 
+// ========== Macro Historical Chart Component ==========
+
+interface FREDDataPoint {
+  date: string;
+  value: number;
+}
+
+interface ChartDataPoint {
+  date: string;
+  month: string;
+  cpi: number | null;
+  fedFunds: number | null;
+}
+
+function useFREDData() {
+  const [data, setData] = useState<ChartDataPoint[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isDemo, setIsDemo] = useState(false);
+
+  useEffect(() => {
+    async function fetchData() {
+      setLoading(true);
+      try {
+        const response = await fetch("/api/fred-data");
+        const result = await response.json();
+        
+        setIsDemo(result.isDemo);
+        
+        // Merge CPI and Fed Funds data by date
+        const dateMap = new Map<string, ChartDataPoint>();
+        
+        // Process CPI data
+        result.cpi.forEach((point: FREDDataPoint) => {
+          const date = new Date(point.date);
+          const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+          const monthLabel = date.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+          
+          dateMap.set(monthKey, {
+            date: monthKey,
+            month: monthLabel,
+            cpi: point.value,
+            fedFunds: null,
+          });
+        });
+        
+        // Process Fed Funds data
+        result.fedFunds.forEach((point: FREDDataPoint) => {
+          const date = new Date(point.date);
+          const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+          const monthLabel = date.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+          
+          const existing = dateMap.get(monthKey);
+          if (existing) {
+            existing.fedFunds = point.value;
+          } else {
+            dateMap.set(monthKey, {
+              date: monthKey,
+              month: monthLabel,
+              cpi: null,
+              fedFunds: point.value,
+            });
+          }
+        });
+        
+        // Sort by date and convert to array
+        const sortedData = Array.from(dateMap.values())
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .slice(-120); // Last 10 years
+        
+        setData(sortedData);
+      } catch (error) {
+        console.error("Failed to fetch FRED data:", error);
+      }
+      setLoading(false);
+    }
+    
+    fetchData();
+  }, []);
+
+  return { data, loading, isDemo };
+}
+
+// Custom Tooltip Component
+function CustomChartTooltip({ 
+  active, 
+  payload, 
+  label,
+  showCPI,
+  showFedFunds,
+}: {
+  active?: boolean;
+  payload?: Array<{ value: number; dataKey: string }>;
+  label?: string;
+  showCPI: boolean;
+  showFedFunds: boolean;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+
+  const cpiValue = payload.find((p) => p.dataKey === "cpi")?.value;
+  const fedFundsValue = payload.find((p) => p.dataKey === "fedFunds")?.value;
+
+  return (
+    <div className="bg-neutral-900 border border-neutral-700 rounded px-3 py-2 shadow-xl">
+      <div className="text-neutral-400 text-[10px] font-mono mb-1">{label}</div>
+      {showCPI && cpiValue !== undefined && (
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: "#FFB900" }} />
+          <span className="text-[#FFB900] text-xs font-mono font-bold">
+            CPI: {cpiValue.toFixed(2)}%
+          </span>
+        </div>
+      )}
+      {showFedFunds && fedFundsValue !== undefined && (
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: "#00FFFF" }} />
+          <span className="text-[#00FFFF] text-xs font-mono font-bold">
+            Fed Funds: {fedFundsValue.toFixed(2)}%
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MacroHistoricalChart() {
+  const { data, loading, isDemo } = useFREDData();
+  const [showCPI, setShowCPI] = useState(true);
+  const [showFedFunds, setShowFedFunds] = useState(true);
+
+  if (loading) {
+    return (
+      <div className="w-full bg-black border border-neutral-800 rounded-lg overflow-hidden">
+        <div className="flex items-center justify-between py-2 px-3 border-b border-neutral-700 bg-neutral-900/30">
+          <span className="text-cyan-500 font-bold text-sm tracking-wider">MACRO TRENDS</span>
+        </div>
+        <div className="h-[400px] flex items-center justify-center">
+          <div className="flex items-center gap-2 text-neutral-500">
+            <motion.div
+              className="w-2 h-2 bg-cyan-500 rounded-full"
+              animate={{ opacity: [0.3, 1, 0.3] }}
+              transition={{ duration: 1, repeat: Infinity }}
+            />
+            <span className="text-sm font-mono">Loading FRED data...</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full bg-black border border-neutral-800 rounded-lg overflow-hidden">
+      {/* Title Bar */}
+      <div className="flex items-center justify-between py-2 px-3 border-b border-neutral-700 bg-neutral-900/30">
+        <div className="flex items-center gap-3">
+          <span className="text-cyan-500 font-bold text-sm tracking-wider">MACRO TRENDS</span>
+          <span className="text-white font-bold text-sm">HISTORICAL</span>
+          {isDemo && (
+            <span className="px-1.5 py-0.5 bg-yellow-500/20 text-yellow-400 text-[9px] font-bold rounded border border-yellow-500/30">
+              DEMO
+            </span>
+          )}
+        </div>
+        
+        {/* Legend / Toggle Buttons */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowCPI(!showCPI)}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wider transition-all ${
+              showCPI 
+                ? "bg-[#FFB900]/20 text-[#FFB900] border border-[#FFB900]/30" 
+                : "bg-neutral-800/50 text-neutral-500 border border-neutral-700"
+            }`}
+          >
+            <div 
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: showCPI ? "#FFB900" : "#666" }}
+            />
+            CPI YoY
+          </button>
+          <button
+            onClick={() => setShowFedFunds(!showFedFunds)}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wider transition-all ${
+              showFedFunds 
+                ? "bg-[#00FFFF]/20 text-[#00FFFF] border border-[#00FFFF]/30" 
+                : "bg-neutral-800/50 text-neutral-500 border border-neutral-700"
+            }`}
+          >
+            <div 
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: showFedFunds ? "#00FFFF" : "#666" }}
+            />
+            Fed Funds
+          </button>
+        </div>
+      </div>
+
+      {/* Chart */}
+      <div className="h-[400px] p-4">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={data}
+            margin={{ top: 10, right: showFedFunds && showCPI ? 60 : 20, left: 20, bottom: 10 }}
+          >
+            <CartesianGrid 
+              strokeDasharray="0" 
+              stroke="#262626" 
+              vertical={false}
+            />
+            
+            {/* Left Y-Axis - CPI */}
+            <YAxis
+              yAxisId="left"
+              orientation="left"
+              tick={{ fill: "#CCCCCC", fontSize: 10, fontFamily: "monospace" }}
+              tickLine={{ stroke: "#444" }}
+              axisLine={{ stroke: "#444" }}
+              tickFormatter={(value) => `${value}%`}
+              domain={["auto", "auto"]}
+              hide={!showCPI}
+            />
+            
+            {/* Right Y-Axis - Fed Funds */}
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              tick={{ fill: "#CCCCCC", fontSize: 10, fontFamily: "monospace" }}
+              tickLine={{ stroke: "#444" }}
+              axisLine={{ stroke: "#444" }}
+              tickFormatter={(value) => `${value}%`}
+              domain={["auto", "auto"]}
+              hide={!showFedFunds || !showCPI}
+            />
+            
+            <XAxis
+              dataKey="month"
+              tick={{ fill: "#CCCCCC", fontSize: 10, fontFamily: "monospace" }}
+              tickLine={{ stroke: "#444" }}
+              axisLine={{ stroke: "#444" }}
+              interval={11}
+              angle={0}
+            />
+            
+            <Tooltip
+              content={<CustomChartTooltip showCPI={showCPI} showFedFunds={showFedFunds} />}
+              cursor={{ stroke: "#FFFFFF", strokeWidth: 1, strokeDasharray: "none" }}
+            />
+            
+            {/* 2% Fed Target Reference Line */}
+            {showCPI && (
+              <ReferenceLine
+                y={2}
+                yAxisId="left"
+                stroke="#FFB900"
+                strokeDasharray="4 4"
+                strokeOpacity={0.3}
+              />
+            )}
+            
+            {/* CPI Line */}
+            {showCPI && (
+              <Line
+                yAxisId="left"
+                type="monotone"
+                dataKey="cpi"
+                stroke="#FFB900"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, fill: "#FFB900", stroke: "#000", strokeWidth: 2 }}
+                connectNulls
+              />
+            )}
+            
+            {/* Fed Funds Line */}
+            {showFedFunds && (
+              <Line
+                yAxisId={showCPI ? "right" : "left"}
+                type="stepAfter"
+                dataKey="fedFunds"
+                stroke="#00FFFF"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, fill: "#00FFFF", stroke: "#000", strokeWidth: 2 }}
+                connectNulls
+              />
+            )}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Footer */}
+      <div className="border-t border-neutral-700 py-2 px-3 flex items-center justify-between bg-neutral-900/50">
+        <span className="text-neutral-500 text-[10px] font-mono">
+          {data.length} Months
+        </span>
+        <div className="flex items-center gap-3 text-[9px]">
+          <span className="text-neutral-600">
+            Source: {isDemo ? "Demo Data" : "FRED (St. Louis Fed)"}
+          </span>
+          <span className="text-neutral-700">|</span>
+          <span className="text-[#FFB900]/50">— CPI 2% Target</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ========== Main Component ==========
 
 export default function Home() {
@@ -2662,6 +2978,11 @@ export default function Home() {
           
           {/* News Sentiment Feed */}
           <NewsSentimentFeed selectedAsset={asset} />
+        </div>
+        
+        {/* Macro Historical Trends Chart */}
+        <div className="mt-6 px-4 max-w-[1800px] mx-auto">
+          <MacroHistoricalChart />
         </div>
       </div>
 
