@@ -1360,6 +1360,7 @@ function useMacroEvents(asset: Asset) {
         
         // 2. Fetch stored prices from Supabase for this asset
         const storedPrices = await getStoredMacroEventsForAsset(asset);
+        console.log(`[MacroEvents] Loaded ${storedPrices.length} cached events for ${asset}`);
         const storedMap = new Map(storedPrices.map((s) => [s.id, storedMacroEventToAppFormat(s)]));
         
         const now = Date.now();
@@ -1405,16 +1406,22 @@ function useMacroEvents(asset: Asset) {
           (e) => e.status === "released" && e.baselinePrice === null
         );
         
+        console.log(`[MacroEvents] Backfilling ${eventsToBackfill.length} events for ${asset}`);
+        
         for (const event of eventsToBackfill) {
           // Check if asset changed
           if (currentAssetRef.current !== asset) {
+            console.log(`[MacroEvents] Asset changed, stopping backfill`);
             backfillInProgressRef.current = false;
             return;
           }
           
+          console.log(`[MacroEvents] Backfilling ${event.id} for ${asset}...`);
           const { baselinePrice, priceWindows } = await backfillMacroEventPrices(event, asset);
           
           if (baselinePrice !== null) {
+            console.log(`[MacroEvents] Got baseline ${baselinePrice} for ${event.id}`);
+            
             // Update local state
             setEvents((prev) =>
               prev.map((e) =>
@@ -1425,15 +1432,19 @@ function useMacroEvents(asset: Asset) {
             );
             
             // Save to Supabase
-            await saveMacroEventPrices({
+            const saved = await saveMacroEventPrices({
               id: event.id,
               asset,
               baselinePrice,
               priceWindows,
             });
+            console.log(`[MacroEvents] Saved ${event.id} for ${asset}: ${saved}`);
+          } else {
+            console.log(`[MacroEvents] Failed to get baseline for ${event.id}`);
           }
         }
         
+        console.log(`[MacroEvents] Backfill complete for ${asset}`);
         backfillInProgressRef.current = false;
       } catch (error) {
         console.error("Failed to fetch macro events:", error);

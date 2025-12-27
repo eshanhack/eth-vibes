@@ -210,21 +210,32 @@ export interface StoredMacroEvent {
 export async function getStoredMacroEventsForAsset(asset: Asset): Promise<StoredMacroEvent[]> {
   const supabase = getSupabase();
   if (!supabase) {
-    console.log('Supabase not configured, skipping macro events fetch');
+    console.log('[Supabase] Not configured, skipping macro events fetch');
     return [];
   }
 
-  const { data, error } = await supabase
-    .from('macro_events')
-    .select('*')
-    .eq('asset', asset);
+  try {
+    const { data, error } = await supabase
+      .from('macro_events')
+      .select('*')
+      .eq('asset', asset);
 
-  if (error) {
-    console.error('Error fetching macro events from Supabase:', error);
+    if (error) {
+      // Table might not exist yet - that's okay
+      if (error.code === '42P01') {
+        console.log('[Supabase] macro_events table does not exist yet');
+        return [];
+      }
+      console.error('[Supabase] Error fetching macro events:', error.message);
+      return [];
+    }
+
+    console.log(`[Supabase] Fetched ${data?.length || 0} macro events for ${asset}`);
+    return data || [];
+  } catch (err) {
+    console.error('[Supabase] Exception fetching macro events:', err);
     return [];
   }
-
-  return data || [];
 }
 
 // Save or update macro event price data
@@ -241,31 +252,52 @@ export async function saveMacroEventPrices(event: {
 }): Promise<boolean> {
   const supabase = getSupabase();
   if (!supabase) {
-    console.log('Supabase not configured, skipping macro event save');
+    console.log('[Supabase] Not configured, skipping macro event save');
     return false;
   }
 
-  // Upsert - insert or update
-  const { error } = await supabase
+  const payload = {
+    id: event.id,
+    asset: event.asset,
+    baseline_price: event.baselinePrice,
+    window_1m: event.priceWindows['1m'],
+    window_10m: event.priceWindows['10m'],
+    window_30m: event.priceWindows['30m'],
+    window_1h: event.priceWindows['1h'],
+    updated_at: new Date().toISOString(),
+  };
+
+  // Try insert first, then update if exists
+  const { data: existing } = await supabase
     .from('macro_events')
-    .upsert({
-      id: event.id,
-      asset: event.asset,
-      baseline_price: event.baselinePrice,
-      window_1m: event.priceWindows['1m'],
-      window_10m: event.priceWindows['10m'],
-      window_30m: event.priceWindows['30m'],
-      window_1h: event.priceWindows['1h'],
-      updated_at: new Date().toISOString(),
-    }, {
-      onConflict: 'id,asset',
-    });
+    .select('id')
+    .eq('id', event.id)
+    .eq('asset', event.asset)
+    .single();
+
+  let error;
+  if (existing) {
+    // Update existing record
+    const result = await supabase
+      .from('macro_events')
+      .update(payload)
+      .eq('id', event.id)
+      .eq('asset', event.asset);
+    error = result.error;
+  } else {
+    // Insert new record
+    const result = await supabase
+      .from('macro_events')
+      .insert(payload);
+    error = result.error;
+  }
 
   if (error) {
-    console.error('Error saving macro event to Supabase:', error);
+    console.error('[Supabase] Error saving macro event:', error.message, error.details);
     return false;
   }
 
+  console.log(`[Supabase] Saved macro event ${event.id} for ${event.asset}`);
   return true;
 }
 
