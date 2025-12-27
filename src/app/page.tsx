@@ -111,9 +111,21 @@ function usePriceFeed(
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
+  // Use ref for callback to avoid stale closure issues
+  const onPriceChangeRef = useRef(onPriceChange);
+  onPriceChangeRef.current = onPriceChange;
+  
+  // Track current asset/source to prevent stale updates
+  const currentAssetRef = useRef(asset);
+  const currentSourceRef = useRef(source);
+  
   const config = ASSET_CONFIG[asset];
 
   useEffect(() => {
+    // Update refs
+    currentAssetRef.current = asset;
+    currentSourceRef.current = source;
+    
     // Reset state when asset or source changes
     setPrice(null);
     setStatus("connecting");
@@ -133,29 +145,46 @@ function usePriceFeed(
       pollIntervalRef.current = null;
     }
 
+    // Capture current values for closure
+    const capturedAsset = asset;
+    const capturedSource = source;
+    const capturedConfig = config;
+
     // DEX token - use CoinGecko polling
-    if (config.coingeckoId) {
+    if (capturedConfig.coingeckoId) {
       const fetchPrice = async () => {
+        // Skip if asset/source changed
+        if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
+          return;
+        }
+        
         try {
           const response = await fetch(
-            `https://api.coingecko.com/api/v3/simple/price?ids=${config.coingeckoId}&vs_currencies=usd`
+            `https://api.coingecko.com/api/v3/simple/price?ids=${capturedConfig.coingeckoId}&vs_currencies=usd`
           );
           if (!response.ok) throw new Error("CoinGecko API error");
           
+          // Check again after async operation
+          if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
+            return;
+          }
+          
           const data = await response.json();
-          const newPrice = data[config.coingeckoId!]?.usd;
+          const newPrice = data[capturedConfig.coingeckoId!]?.usd;
           
           if (newPrice !== undefined) {
             setStatus("connected");
-            if (prevPriceRef.current !== null && onPriceChange && newPrice !== prevPriceRef.current) {
-              onPriceChange(newPrice, prevPriceRef.current);
+            if (prevPriceRef.current !== null && onPriceChangeRef.current && newPrice !== prevPriceRef.current) {
+              onPriceChangeRef.current(newPrice, prevPriceRef.current);
             }
             prevPriceRef.current = newPrice;
             setPrice(newPrice);
           }
         } catch (e) {
           console.error("CoinGecko fetch error:", e);
-          setStatus("disconnected");
+          if (currentAssetRef.current === capturedAsset && currentSourceRef.current === capturedSource) {
+            setStatus("disconnected");
+          }
         }
       };
 
@@ -175,15 +204,24 @@ function usePriceFeed(
 
     // Major token - use WebSocket
     const connect = () => {
+      // Skip if asset/source changed
+      if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
+        return;
+      }
+      
       setStatus("connecting");
 
       let ws: WebSocket;
 
-      if (source === "hyperliquid" && asset === "ETH") {
+      if (capturedSource === "hyperliquid" && capturedAsset === "ETH") {
         // Hyperliquid only supports ETH
         ws = new WebSocket("wss://api.hyperliquid.xyz/ws");
         
         ws.onopen = () => {
+          if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
+            ws.close();
+            return;
+          }
           setStatus("connected");
           ws.send(
             JSON.stringify({
@@ -194,14 +232,19 @@ function usePriceFeed(
         };
 
         ws.onmessage = (event) => {
+          // Skip if asset/source changed
+          if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
+            return;
+          }
+          
           try {
             const data = JSON.parse(event.data);
             if (data.channel === "allMids" && data.data?.mids) {
-              const mid = data.data.mids[asset];
+              const mid = data.data.mids[capturedAsset];
               if (mid) {
                 const newPrice = parseFloat(mid);
-                if (prevPriceRef.current !== null && onPriceChange) {
-                  onPriceChange(newPrice, prevPriceRef.current);
+                if (prevPriceRef.current !== null && onPriceChangeRef.current) {
+                  onPriceChangeRef.current(newPrice, prevPriceRef.current);
                 }
                 prevPriceRef.current = newPrice;
                 setPrice(newPrice);
@@ -213,20 +256,29 @@ function usePriceFeed(
         };
       } else {
         // Binance - supports all major tokens
-        const symbol = config.binanceSymbol || "ethusdt";
+        const symbol = capturedConfig.binanceSymbol || "ethusdt";
         ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}@aggTrade`);
         
         ws.onopen = () => {
+          if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
+            ws.close();
+            return;
+          }
           setStatus("connected");
         };
 
         ws.onmessage = (event) => {
+          // Skip if asset/source changed
+          if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
+            return;
+          }
+          
           try {
             const data = JSON.parse(event.data);
             if (data.p) {
               const newPrice = parseFloat(data.p);
-              if (prevPriceRef.current !== null && onPriceChange) {
-                onPriceChange(newPrice, prevPriceRef.current);
+              if (prevPriceRef.current !== null && onPriceChangeRef.current) {
+                onPriceChangeRef.current(newPrice, prevPriceRef.current);
               }
               prevPriceRef.current = newPrice;
               setPrice(newPrice);
@@ -238,8 +290,10 @@ function usePriceFeed(
       }
 
       ws.onclose = () => {
-        setStatus("disconnected");
-        reconnectTimeoutRef.current = setTimeout(connect, 3000);
+        if (currentAssetRef.current === capturedAsset && currentSourceRef.current === capturedSource) {
+          setStatus("disconnected");
+          reconnectTimeoutRef.current = setTimeout(connect, 3000);
+        }
       };
 
       ws.onerror = () => {
@@ -261,7 +315,7 @@ function usePriceFeed(
         reconnectTimeoutRef.current = null;
       }
     };
-  }, [asset, source, config, onPriceChange]);
+  }, [asset, source, config]);
 
   const formattedPrice = useMemo(() => {
     if (price === null) return null;
