@@ -54,12 +54,17 @@ function isHighImpact(event: FMPEvent): boolean {
 
 export async function GET() {
   try {
+    // Debug: Check if API key is configured
+    const hasApiKey = !!FMP_API_KEY;
+    const keyLength = FMP_API_KEY?.length || 0;
+    
     if (!FMP_API_KEY) {
       // Return demo data if no API key
       return NextResponse.json({
         events: getDemoEvents(),
         source: "Demo Data (FMP_API_KEY not configured)",
         isDemo: true,
+        debug: { hasApiKey, keyLength },
       });
     }
 
@@ -76,14 +81,39 @@ export async function GET() {
     const url = `https://financialmodelingprep.com/api/v3/economic_calendar?from=${fromStr}&to=${toStr}&apikey=${FMP_API_KEY}`;
 
     const response = await fetch(url, {
-      next: { revalidate: 300 }, // Cache for 5 minutes
+      cache: "no-store", // Don't cache during debugging
     });
 
     if (!response.ok) {
-      throw new Error(`FMP API error: ${response.status}`);
+      const errorText = await response.text();
+      return NextResponse.json({
+        events: getDemoEvents(),
+        source: `Demo Data (API returned ${response.status})`,
+        isDemo: true,
+        debug: { 
+          hasApiKey: true, 
+          keyLength,
+          status: response.status,
+          error: errorText.slice(0, 200),
+        },
+      });
     }
 
     const data: FMPEvent[] = await response.json();
+
+    // Check if API returned an error message
+    if (!Array.isArray(data)) {
+      return NextResponse.json({
+        events: getDemoEvents(),
+        source: "Demo Data (Invalid API response)",
+        isDemo: true,
+        debug: { 
+          hasApiKey: true, 
+          keyLength,
+          response: JSON.stringify(data).slice(0, 200),
+        },
+      });
+    }
 
     // Filter for high-impact USD events
     const highImpactEvents = data
@@ -108,6 +138,12 @@ export async function GET() {
       events: highImpactEvents,
       source: "Financial Modeling Prep",
       isDemo: false,
+      debug: { 
+        hasApiKey: true, 
+        keyLength,
+        totalEvents: data.length,
+        filteredEvents: highImpactEvents.length,
+      },
     });
   } catch (error) {
     console.error("Error fetching macro events:", error);
@@ -117,6 +153,11 @@ export async function GET() {
       events: getDemoEvents(),
       source: "Demo Data (API Error)",
       isDemo: true,
+      debug: { 
+        hasApiKey: !!FMP_API_KEY,
+        keyLength: FMP_API_KEY?.length || 0,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
     });
   }
 }
