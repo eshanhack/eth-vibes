@@ -1521,6 +1521,42 @@ function useMacroEvents(asset: Asset) {
   return { events, loading, isDemo };
 }
 
+// Calculate impact score for macro event based on price changes
+function calculateMacroImpact(event: MacroEventWithTracking): { score: number; direction: "positive" | "negative" | "neutral" } {
+  const windows = event.priceWindows;
+  
+  // Collect all valid changes with weights (favor earlier timeframes)
+  const weights = { "1m": 4, "10m": 3, "30m": 2, "1h": 1 };
+  let weightedSum = 0;
+  let totalWeight = 0;
+  let positiveCount = 0;
+  let negativeCount = 0;
+  
+  for (const key of ["1m", "10m", "30m", "1h"] as const) {
+    const change = windows[key].change;
+    if (change !== null && windows[key].locked) {
+      const weight = weights[key];
+      weightedSum += Math.abs(change) * weight;
+      totalWeight += weight;
+      if (change > 0) positiveCount++;
+      if (change < 0) negativeCount++;
+    }
+  }
+  
+  if (totalWeight === 0) return { score: 0, direction: "neutral" };
+  
+  // Average magnitude weighted by timeframe
+  const avgMagnitude = weightedSum / totalWeight;
+  
+  // Direction is based on majority of timeframes
+  const direction = positiveCount > negativeCount ? "positive" : negativeCount > positiveCount ? "negative" : "neutral";
+  
+  // Score: 0-1 scale based on magnitude (1% move = 0.5 score, 2%+ = 1.0)
+  const score = Math.min(avgMagnitude / 2, 1);
+  
+  return { score, direction };
+}
+
 // Macro Event Row Component
 function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: number }) {
   const timeUntil = event.timestamp - now;
@@ -1532,6 +1568,27 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
   // Historical event = released more than 1 hour ago without baseline capture
   const isHistorical = !isUpcoming && timeSinceRelease > 60 * 60 * 1000 && event.baselinePrice === null;
   
+  // Calculate impact score for row shading
+  const { score: impactScore, direction: impactDirection } = useMemo(
+    () => calculateMacroImpact(event),
+    [event]
+  );
+  
+  // Row background color based on impact
+  const getRowStyle = (): React.CSSProperties => {
+    if (isUpcoming || isHistorical || impactScore === 0) return {};
+    
+    // Opacity scales with impact score (0.05 to 0.25)
+    const opacity = 0.05 + impactScore * 0.2;
+    
+    if (impactDirection === "positive") {
+      return { backgroundColor: `rgba(34, 197, 94, ${opacity})` }; // green-500
+    } else if (impactDirection === "negative") {
+      return { backgroundColor: `rgba(239, 68, 68, ${opacity})` }; // red-500
+    }
+    return {};
+  };
+  
   return (
     <motion.tr
       layout
@@ -1541,6 +1598,7 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
       className={`border-b border-neutral-800/30 ${
         isTracking ? "bg-amber-500/5" : ""
       } ${isHistorical ? "opacity-60" : ""}`}
+      style={getRowStyle()}
     >
       {/* Event Name */}
       <td className="py-2.5 px-3 border-r border-neutral-800/30">
