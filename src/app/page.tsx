@@ -505,8 +505,16 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
   const [error, setError] = useState<string | null>(null);
   const [isDemo, setIsDemo] = useState(false);
   const [source, setSource] = useState<string>("");
+  const [pricesLoading, setPricesLoading] = useState(false);
+  
+  // Track raw tweets separately so we can re-fetch prices when asset changes
+  const rawTweetsRef = useRef<{ id: string; text: string; createdAt: string; timestamp: number; url?: string }[]>([]);
+  // Track if initial fetch is done
+  const initialFetchDoneRef = useRef(false);
+  // Track current asset for cancellation
+  const currentAssetRef = useRef(selectedAsset);
 
-  // Function to update a single tweet's price data and save to Supabase
+  // Function to update a single tweet's price data (only save to Supabase for ETH)
   const updateTweetPrice = useCallback(async (tweetId: string, timestamp: number) => {
     const priceData = await fetchMultiTimeframePricesClient(timestamp, selectedAsset);
     
@@ -517,39 +525,145 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
           : tweet
       );
       
-      // Save to Supabase
-      const updatedTweet = updatedTweets.find(t => t.id === tweetId);
-      if (updatedTweet) {
-        saveTweetImpact({
-          id: updatedTweet.id,
-          text: updatedTweet.text,
-          createdAt: updatedTweet.createdAt,
-          timestamp: updatedTweet.timestamp,
-          url: updatedTweet.url || null,
-          priceAtT: updatedTweet.priceAtT,
-          timeframes: updatedTweet.timeframes,
-          impactScore: updatedTweet.impactScore,
-          impactDirection: updatedTweet.impactDirection,
-        }).catch(err => console.error("Failed to save to Supabase:", err));
+      // Only save to Supabase for ETH (default asset)
+      if (selectedAsset === "ETH") {
+        const updatedTweet = updatedTweets.find(t => t.id === tweetId);
+        if (updatedTweet) {
+          saveTweetImpact({
+            id: updatedTweet.id,
+            text: updatedTweet.text,
+            createdAt: updatedTweet.createdAt,
+            timestamp: updatedTweet.timestamp,
+            url: updatedTweet.url || null,
+            priceAtT: updatedTweet.priceAtT,
+            timeframes: updatedTweet.timeframes,
+            impactScore: updatedTweet.impactScore,
+            impactDirection: updatedTweet.impactDirection,
+          }).catch(err => console.error("Failed to save to Supabase:", err));
+        }
       }
       
       return updatedTweets;
     });
   }, [selectedAsset]);
 
+  // Fetch prices for all tweets with the selected asset
+  const fetchPricesForAsset = useCallback(async (
+    tweetsToProcess: { id: string; text: string; createdAt: string; timestamp: number; url?: string }[],
+    asset: Asset,
+    useCache: boolean = false,
+    storedTweetsMap?: Map<string, ReturnType<typeof storedTweetToAppFormat>>
+  ) => {
+    const now = Date.now();
+    currentAssetRef.current = asset;
+    setPricesLoading(true);
+
+    // Initialize all tweets with empty price data
+    const initializedTweets: TweetWithPrice[] = tweetsToProcess.map(tweet => {
+      // Only use cache for ETH
+      if (useCache && asset === "ETH" && storedTweetsMap) {
+        const stored = storedTweetsMap.get(tweet.id);
+        if (stored) {
+          return stored as TweetWithPrice;
+        }
+      }
+      return {
+        ...tweet,
+        priceAtT: null,
+        timeframes: { ...EMPTY_TIMEFRAMES },
+        impactScore: 0,
+        impactDirection: "neutral" as const,
+      };
+    });
+
+    setTweets(initializedTweets);
+
+    // Fetch prices for each tweet
+    for (let i = 0; i < initializedTweets.length; i++) {
+      // Check if asset changed mid-fetch
+      if (currentAssetRef.current !== asset) {
+        console.log(`Asset changed from ${asset} to ${currentAssetRef.current}, stopping price fetch`);
+        break;
+      }
+
+      const tweet = initializedTweets[i];
+      
+      // Skip if timestamp is invalid
+      if (!tweet.timestamp || tweet.timestamp <= 0 || tweet.timestamp > now) {
+        continue;
+      }
+      
+      // For cached ETH data, skip if already complete
+      if (useCache && asset === "ETH" && tweet.priceAtT !== null) {
+        const needsPriceFetch = 
+          tweet.timeframes["1m"].pending ||
+          tweet.timeframes["10m"].pending ||
+          tweet.timeframes["30m"].pending ||
+          tweet.timeframes["1h"].pending;
+        
+        if (!needsPriceFetch) {
+          continue;
+        }
+      }
+      
+      try {
+        console.log(`Fetching ${asset} prices for tweet ${i + 1}/${initializedTweets.length}`);
+        
+        const priceData = await fetchMultiTimeframePricesClient(tweet.timestamp, asset);
+
+        // Check again if asset changed
+        if (currentAssetRef.current !== asset) {
+          break;
+        }
+
+        // Update tweet with price data
+        setTweets(prevTweets =>
+          prevTweets.map(t => t.id === tweet.id ? { ...t, ...priceData } : t)
+        );
+
+        // Only save to Supabase for ETH
+        if (asset === "ETH") {
+          const updatedTweet = { ...tweet, ...priceData };
+          saveTweetImpact({
+            id: updatedTweet.id,
+            text: updatedTweet.text,
+            createdAt: updatedTweet.createdAt,
+            timestamp: updatedTweet.timestamp,
+            url: updatedTweet.url || null,
+            priceAtT: updatedTweet.priceAtT,
+            timeframes: updatedTweet.timeframes,
+            impactScore: updatedTweet.impactScore,
+            impactDirection: updatedTweet.impactDirection,
+          }).catch(err => console.error("Failed to save to Supabase:", err));
+        }
+
+        // Throttle
+        if (i < initializedTweets.length - 1) {
+          await delay(PRICE_FETCH_DELAY_MS);
+        }
+      } catch (err) {
+        console.error(`Failed to fetch price for tweet ${tweet.id}:`, err);
+      }
+    }
+    
+    setPricesLoading(false);
+    console.log(`Finished fetching ${asset} prices`);
+  }, []);
+
+  // Initial fetch of tweets
   useEffect(() => {
-    async function fetchTweetsWithPrices() {
+    async function fetchTweets() {
       try {
         setLoading(true);
         setError(null);
 
-        // Step 1: Fetch stored tweets from Supabase first
+        // Fetch stored tweets from Supabase (for ETH cache)
         console.log("Fetching stored tweets from Supabase...");
         const storedTweets = await getStoredTweets();
         const storedTweetsMap = new Map(storedTweets.map(t => [t.id, storedTweetToAppFormat(t)]));
         console.log(`Found ${storedTweets.length} tweets in Supabase`);
 
-        // Step 2: Fetch fresh tweets from X API
+        // Fetch fresh tweets from X API
         console.log("Fetching tweets from X API...");
         const tweetsRes = await fetch("/api/tweets");
         if (!tweetsRes.ok) {
@@ -560,18 +674,27 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
         console.log("Tweets API response:", tweetsData);
 
         if (tweetsData.error && (!tweetsData.tweets || tweetsData.tweets.length === 0)) {
-          // If X API fails but we have stored tweets, use those
           if (storedTweets.length > 0) {
             console.log("X API failed, using stored tweets from Supabase");
-            setTweets(storedTweets.map(t => storedTweetToAppFormat(t) as TweetWithPrice));
+            rawTweetsRef.current = storedTweets.map(t => ({
+              id: t.id,
+              text: t.text,
+              createdAt: t.created_at,
+              timestamp: t.timestamp,
+              url: t.url || undefined,
+            }));
             setSource("Supabase (cached)");
             setLoading(false);
+            initialFetchDoneRef.current = true;
+            // Fetch prices for the selected asset
+            await fetchPricesForAsset(rawTweetsRef.current, selectedAsset, true, storedTweetsMap);
             return;
           }
           throw new Error(tweetsData.error);
         }
 
         const rawTweets = tweetsData.tweets || [];
+        rawTweetsRef.current = rawTweets;
         console.log(`Received ${rawTweets.length} tweets from X API`);
         
         if (tweetsData.isDemo) {
@@ -587,105 +710,39 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
           return;
         }
 
-        const now = Date.now();
-
-        // Step 3: Merge tweets - use Supabase data if available, otherwise initialize
-        const mergedTweets: TweetWithPrice[] = rawTweets.map(
-          (tweet: { id: string; text: string; createdAt: string; timestamp: number; url?: string }) => {
-            const stored = storedTweetsMap.get(tweet.id);
-            if (stored) {
-              // Use stored data from Supabase
-              return stored as TweetWithPrice;
-            }
-            // New tweet, initialize with empty data
-            return {
-              ...tweet,
-              priceAtT: null,
-              timeframes: { ...EMPTY_TIMEFRAMES },
-              impactScore: 0,
-              impactDirection: "neutral" as const,
-            };
-          }
-        );
-        
-        setTweets(mergedTweets);
         setLoading(false);
-
-        // Step 4: Fetch prices only for tweets that need it
-        console.log("Checking for tweets that need price data...");
+        initialFetchDoneRef.current = true;
         
-        for (let i = 0; i < mergedTweets.length; i++) {
-          const tweet = mergedTweets[i];
-          
-          // Skip if timestamp is invalid
-          if (!tweet.timestamp || tweet.timestamp <= 0 || tweet.timestamp > now) {
-            continue;
-          }
-          
-          // Check if this tweet needs price fetching
-          const needsPriceFetch = 
-            tweet.priceAtT === null ||
-            tweet.timeframes["1m"].pending ||
-            tweet.timeframes["10m"].pending ||
-            tweet.timeframes["30m"].pending ||
-            tweet.timeframes["1h"].pending;
-          
-          if (!needsPriceFetch) {
-            console.log(`Tweet ${tweet.id} already has complete price data, skipping`);
-            continue;
-          }
-          
-          try {
-            console.log(`Fetching prices for tweet ${i + 1}/${mergedTweets.length}: ${new Date(tweet.timestamp).toISOString()}`);
-            
-            const priceData = await fetchMultiTimeframePricesClient(tweet.timestamp, selectedAsset);
-
-            console.log(`Price data for tweet ${tweet.id}:`, priceData);
-
-            // Update tweet with price data
-            const updatedTweet = {
-              ...tweet,
-              ...priceData,
-            };
-
-            setTweets(prevTweets =>
-              prevTweets.map(t => t.id === tweet.id ? updatedTweet : t)
-            );
-
-            // Save to Supabase
-            await saveTweetImpact({
-              id: updatedTweet.id,
-              text: updatedTweet.text,
-              createdAt: updatedTweet.createdAt,
-              timestamp: updatedTweet.timestamp,
-              url: updatedTweet.url || null,
-              priceAtT: updatedTweet.priceAtT,
-              timeframes: updatedTweet.timeframes,
-              impactScore: updatedTweet.impactScore,
-              impactDirection: updatedTweet.impactDirection,
-            });
-
-            // Throttle
-            if (i < mergedTweets.length - 1) {
-              await delay(PRICE_FETCH_DELAY_MS);
-            }
-          } catch (err) {
-            console.error(`Failed to fetch price for tweet ${tweet.id}:`, err);
-          }
-        }
+        // Fetch prices for the selected asset (use cache for ETH)
+        await fetchPricesForAsset(rawTweets, selectedAsset, selectedAsset === "ETH", storedTweetsMap);
         
-        console.log("Finished processing all tweets");
       } catch (err) {
-        console.error("Error in fetchTweetsWithPrices:", err);
+        console.error("Error in fetchTweets:", err);
         setError(err instanceof Error ? err.message : "Unknown error");
         setLoading(false);
       }
     }
 
-    fetchTweetsWithPrices();
-  }, [selectedAsset]);
+    fetchTweets();
+    // Only run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  return { tweets, loading, error, updateTweetPrice, isDemo, source, selectedAsset };
+  // Re-fetch prices when asset changes (after initial load)
+  useEffect(() => {
+    if (!initialFetchDoneRef.current || rawTweetsRef.current.length === 0) {
+      return;
+    }
+
+    console.log(`Asset changed to ${selectedAsset}, re-fetching prices...`);
+    
+    // For ETH, we could potentially use cache, but for simplicity just re-fetch
+    // This ensures consistency
+    fetchPricesForAsset(rawTweetsRef.current, selectedAsset, false);
+    
+  }, [selectedAsset, fetchPricesForAsset]);
+
+  return { tweets, loading: loading || pricesLoading, error, updateTweetPrice, isDemo, source, selectedAsset };
 }
 
 // ========== Components ==========
