@@ -1594,12 +1594,21 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
         const isPositive = (window.change ?? 0) > 0;
         const isLocked = window.locked;
         
+        // Format prices compactly (e.g., "3,450" or "0.1234")
+        const formatCompactPrice = (price: number | null) => {
+          if (price === null) return "—";
+          if (price >= 1000) return price.toLocaleString("en-US", { maximumFractionDigits: 0 });
+          if (price >= 100) return price.toFixed(1);
+          if (price >= 1) return price.toFixed(2);
+          return price.toFixed(4);
+        };
+        
         return (
-          <td key={key} className="py-2.5 px-2 border-r border-neutral-800/30 text-center min-w-[70px]">
+          <td key={key} className="py-2.5 px-2 border-r border-neutral-800/30 text-center min-w-[85px]">
             {isUpcoming || isHistorical ? (
               <span className="text-neutral-700 text-[10px]">—</span>
             ) : hasValue ? (
-              <div className="flex flex-col items-center">
+              <div className="flex flex-col items-center gap-0.5">
                 <span
                   className={`text-[11px] font-bold tabular-nums ${
                     isPositive ? "text-emerald-400" : "text-red-400"
@@ -1612,8 +1621,10 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
                 >
                   {isPositive ? "+" : ""}{window.change!.toFixed(2)}%
                 </span>
-                {isLocked && (
-                  <span className="text-[7px] text-neutral-600 uppercase">Locked</span>
+                {isLocked && window.price !== null && event.baselinePrice !== null && (
+                  <span className="text-[8px] text-neutral-500 tabular-nums">
+                    {formatCompactPrice(event.baselinePrice)} → {formatCompactPrice(window.price)}
+                  </span>
                 )}
               </div>
             ) : (
