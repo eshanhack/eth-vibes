@@ -1519,9 +1519,9 @@ function MacroAlphaTable({ selectedAsset = "ETH" }: MacroAlphaTableProps) {
     return () => clearInterval(interval);
   }, []);
   
-  // Filter to show upcoming and recent events
+  // Filter to show upcoming and recent events (past 7 days + next 30 days)
   const visibleEvents = useMemo(() => {
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000; // Past 24 hours
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // Past 7 days
     return events
       .filter((e) => e.timestamp > cutoff || e.status === "tracking")
       .sort((a, b) => a.timestamp - b.timestamp);
