@@ -1203,16 +1203,17 @@ interface MacroEventWithTracking extends MacroEvent {
   status: "upcoming" | "released" | "tracking" | "complete";
 }
 
-// Format countdown time
+// Format countdown time with days, hours, minutes, seconds
 function formatCountdown(ms: number): string {
-  if (ms <= 0) return "00:00:00";
+  if (ms <= 0) return "0d 00:00:00";
   
   const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
   
-  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+  return `${days}d ${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
 // Format time ago
