@@ -19,9 +19,13 @@ function getSupabase(): SupabaseClient | null {
   return supabaseClient;
 }
 
+// Supported assets type (must match page.tsx)
+export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP' | 'SHFL';
+
 // Types for our tweet data
 export interface StoredTweet {
   id: string;
+  asset: Asset;
   text: string;
   created_at: string;
   timestamp: number;
@@ -36,8 +40,8 @@ export interface StoredTweet {
   updated_at: string;
 }
 
-// Fetch all stored tweets from Supabase
-export async function getStoredTweets(): Promise<StoredTweet[]> {
+// Fetch stored tweets for a specific asset from Supabase
+export async function getStoredTweetsForAsset(asset: Asset): Promise<StoredTweet[]> {
   const supabase = getSupabase();
   if (!supabase) {
     console.log('Supabase not configured, skipping fetch');
@@ -47,6 +51,7 @@ export async function getStoredTweets(): Promise<StoredTweet[]> {
   const { data, error } = await supabase
     .from('tweets')
     .select('*')
+    .eq('asset', asset)
     .order('timestamp', { ascending: false })
     .limit(50);
 
@@ -58,9 +63,15 @@ export async function getStoredTweets(): Promise<StoredTweet[]> {
   return data || [];
 }
 
-// Save or update a tweet in Supabase
+// Legacy function - fetch all tweets (for backward compatibility)
+export async function getStoredTweets(): Promise<StoredTweet[]> {
+  return getStoredTweetsForAsset('ETH');
+}
+
+// Save or update a tweet with price data for a specific asset
 export async function saveTweetImpact(tweet: {
   id: string;
+  asset: Asset;
   text: string;
   createdAt: string;
   timestamp: number;
@@ -81,11 +92,12 @@ export async function saveTweetImpact(tweet: {
     return false;
   }
 
-  // First, check if this tweet already exists
+  // Check if this tweet+asset combo already exists
   const { data: existing } = await supabase
     .from('tweets')
     .select('*')
     .eq('id', tweet.id)
+    .eq('asset', tweet.asset)
     .single();
 
   if (existing) {
@@ -121,7 +133,8 @@ export async function saveTweetImpact(tweet: {
       const { error } = await supabase
         .from('tweets')
         .update(updates)
-        .eq('id', tweet.id);
+        .eq('id', tweet.id)
+        .eq('asset', tweet.asset);
 
       if (error) {
         console.error('Error updating tweet in Supabase:', error);
@@ -132,9 +145,10 @@ export async function saveTweetImpact(tweet: {
     return true;
   }
 
-  // Insert new tweet
+  // Insert new tweet+asset record
   const { error } = await supabase.from('tweets').insert({
     id: tweet.id,
+    asset: tweet.asset,
     text: tweet.text,
     created_at: tweet.createdAt,
     timestamp: tweet.timestamp,

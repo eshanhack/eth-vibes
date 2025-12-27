@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { motion, LayoutGroup, AnimatePresence } from "framer-motion";
-import { getStoredTweets, saveTweetImpact, storedTweetToAppFormat } from "@/lib/supabase";
+import { getStoredTweetsForAsset, saveTweetImpact, storedTweetToAppFormat } from "@/lib/supabase";
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 type Direction = "up" | "down";
@@ -512,8 +512,10 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
   const currentAssetRef = useRef(selectedAsset);
   // Track if we're fetching prices
   const fetchingPricesRef = useRef(false);
+  // Cache for stored tweets by asset (to avoid re-fetching from Supabase)
+  const cachedTweetsByAssetRef = useRef<Map<Asset, Map<string, ReturnType<typeof storedTweetToAppFormat>>>>(new Map());
 
-  // Function to update a single tweet's price data (only save to Supabase for ETH)
+  // Function to update a single tweet's price data and save to Supabase
   const updateTweetPrice = useCallback(async (tweetId: string, timestamp: number) => {
     const priceData = await fetchMultiTimeframePricesClient(timestamp, selectedAsset);
     
@@ -524,22 +526,21 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
           : tweet
       );
       
-      // Only save to Supabase for ETH (default asset)
-      if (selectedAsset === "ETH") {
-        const updatedTweet = updatedTweets.find(t => t.id === tweetId);
-        if (updatedTweet) {
-          saveTweetImpact({
-            id: updatedTweet.id,
-            text: updatedTweet.text,
-            createdAt: updatedTweet.createdAt,
-            timestamp: updatedTweet.timestamp,
-            url: updatedTweet.url || null,
-            priceAtT: updatedTweet.priceAtT,
-            timeframes: updatedTweet.timeframes,
-            impactScore: updatedTweet.impactScore,
-            impactDirection: updatedTweet.impactDirection,
-          }).catch(err => console.error("Failed to save to Supabase:", err));
-        }
+      // Save to Supabase for all assets
+      const updatedTweet = updatedTweets.find(t => t.id === tweetId);
+      if (updatedTweet) {
+        saveTweetImpact({
+          id: updatedTweet.id,
+          asset: selectedAsset,
+          text: updatedTweet.text,
+          createdAt: updatedTweet.createdAt,
+          timestamp: updatedTweet.timestamp,
+          url: updatedTweet.url || null,
+          priceAtT: updatedTweet.priceAtT,
+          timeframes: updatedTweet.timeframes,
+          impactScore: updatedTweet.impactScore,
+          impactDirection: updatedTweet.impactDirection,
+        }).catch(err => console.error("Failed to save to Supabase:", err));
       }
       
       return updatedTweets;
@@ -553,11 +554,6 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
         setLoading(true);
         setError(null);
 
-        // Fetch stored tweets from Supabase
-        console.log("Fetching stored tweets from Supabase...");
-        const storedTweets = await getStoredTweets();
-        console.log(`Found ${storedTweets.length} tweets in Supabase`);
-
         // Fetch fresh tweets from X API
         console.log("Fetching tweets from X API...");
         const tweetsRes = await fetch("/api/tweets");
@@ -569,20 +565,6 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
         console.log("Tweets API response:", tweetsData);
 
         if (tweetsData.error && (!tweetsData.tweets || tweetsData.tweets.length === 0)) {
-          if (storedTweets.length > 0) {
-            console.log("X API failed, using stored tweets from Supabase");
-            const storedRawTweets = storedTweets.map(t => ({
-              id: t.id,
-              text: t.text,
-              createdAt: t.created_at,
-              timestamp: t.timestamp,
-              url: t.url || undefined,
-            }));
-            setRawTweets(storedRawTweets);
-            setSource("Supabase (cached)");
-            setLoading(false);
-            return;
-          }
           throw new Error(tweetsData.error);
         }
 
@@ -625,34 +607,78 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
       console.log(`Starting price fetch for ${asset}...`);
       fetchingPricesRef.current = true;
 
-      // Initialize all tweets with empty/pending price data immediately
-      const initializedTweets: TweetWithPrice[] = rawTweets.map(tweet => ({
-        ...tweet,
-        priceAtT: null,
-        timeframes: { ...EMPTY_TIMEFRAMES },
-        impactScore: 0,
-        impactDirection: "neutral" as const,
-      }));
+      // Try to get cached data from Supabase for this asset
+      let cachedMap = cachedTweetsByAssetRef.current.get(asset);
+      
+      if (!cachedMap) {
+        console.log(`Fetching cached ${asset} prices from Supabase...`);
+        const storedTweets = await getStoredTweetsForAsset(asset);
+        cachedMap = new Map(storedTweets.map(t => [t.id, storedTweetToAppFormat(t)]));
+        cachedTweetsByAssetRef.current.set(asset, cachedMap);
+        console.log(`Found ${storedTweets.length} cached ${asset} tweets in Supabase`);
+      }
+
+      // Check if asset changed during Supabase fetch
+      if (currentAssetRef.current !== asset) {
+        console.log(`Asset changed during cache fetch, stopping`);
+        return;
+      }
+
+      // Initialize tweets - use cached data if available, otherwise pending
+      const initializedTweets: TweetWithPrice[] = rawTweets.map(tweet => {
+        const cached = cachedMap?.get(tweet.id);
+        if (cached && cached.priceAtT !== null) {
+          // Use cached data
+          return {
+            ...tweet,
+            priceAtT: cached.priceAtT,
+            timeframes: cached.timeframes,
+            impactScore: cached.impactScore,
+            impactDirection: cached.impactDirection,
+          } as TweetWithPrice;
+        }
+        // No cache, initialize with pending
+        return {
+          ...tweet,
+          priceAtT: null,
+          timeframes: { ...EMPTY_TIMEFRAMES },
+          impactScore: 0,
+          impactDirection: "neutral" as const,
+        };
+      });
 
       setTweets(initializedTweets);
 
-      // Fetch prices for each tweet
-      for (let i = 0; i < rawTweets.length; i++) {
+      // Fetch prices only for tweets that need it
+      for (let i = 0; i < initializedTweets.length; i++) {
         // Check if asset changed mid-fetch
         if (currentAssetRef.current !== asset) {
           console.log(`Asset changed from ${asset} to ${currentAssetRef.current}, stopping price fetch`);
           return;
         }
 
-        const tweet = rawTweets[i];
+        const tweet = initializedTweets[i];
         
         // Skip if timestamp is invalid
         if (!tweet.timestamp || tweet.timestamp <= 0 || tweet.timestamp > now) {
           continue;
         }
+
+        // Skip if already has complete data from cache
+        const needsFetch = 
+          tweet.priceAtT === null ||
+          tweet.timeframes["1m"].pending ||
+          tweet.timeframes["10m"].pending ||
+          tweet.timeframes["30m"].pending ||
+          tweet.timeframes["1h"].pending;
+
+        if (!needsFetch) {
+          console.log(`Tweet ${i + 1}/${initializedTweets.length} has cached ${asset} data, skipping`);
+          continue;
+        }
         
         try {
-          console.log(`Fetching ${asset} prices for tweet ${i + 1}/${rawTweets.length}`);
+          console.log(`Fetching ${asset} prices for tweet ${i + 1}/${initializedTweets.length}`);
           
           const priceData = await fetchMultiTimeframePricesClient(tweet.timestamp, asset);
 
@@ -667,23 +693,31 @@ function useNewsFeed(selectedAsset: Asset = "ETH") {
             prevTweets.map(t => t.id === tweet.id ? { ...t, ...priceData } : t)
           );
 
-          // Only save to Supabase for ETH
-          if (asset === "ETH") {
-            saveTweetImpact({
-              id: tweet.id,
-              text: tweet.text,
-              createdAt: tweet.createdAt,
-              timestamp: tweet.timestamp,
-              url: tweet.url || null,
-              priceAtT: priceData.priceAtT,
-              timeframes: priceData.timeframes,
-              impactScore: priceData.impactScore,
-              impactDirection: priceData.impactDirection,
-            }).catch(err => console.error("Failed to save to Supabase:", err));
+          // Update local cache
+          const rawTweet = rawTweets.find(t => t.id === tweet.id);
+          if (rawTweet) {
+            cachedMap?.set(tweet.id, {
+              ...rawTweet,
+              ...priceData,
+            });
           }
 
+          // Save to Supabase for all assets
+          saveTweetImpact({
+            id: tweet.id,
+            asset: asset,
+            text: tweet.text,
+            createdAt: tweet.createdAt,
+            timestamp: tweet.timestamp,
+            url: tweet.url || null,
+            priceAtT: priceData.priceAtT,
+            timeframes: priceData.timeframes,
+            impactScore: priceData.impactScore,
+            impactDirection: priceData.impactDirection,
+          }).catch(err => console.error("Failed to save to Supabase:", err));
+
           // Throttle between requests
-          if (i < rawTweets.length - 1) {
+          if (i < initializedTweets.length - 1) {
             await delay(PRICE_FETCH_DELAY_MS);
           }
         } catch (err) {
