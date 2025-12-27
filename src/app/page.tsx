@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { motion, LayoutGroup, AnimatePresence } from "framer-motion";
+import { getStoredTweets, saveTweetImpact, storedTweetToAppFormat } from "@/lib/supabase";
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 type Direction = "up" | "down";
@@ -410,16 +411,35 @@ function useNewsFeed() {
   const [isDemo, setIsDemo] = useState(false);
   const [source, setSource] = useState<string>("");
 
-  // Function to update a single tweet's price data (for refreshing pending timeframes)
+  // Function to update a single tweet's price data and save to Supabase
   const updateTweetPrice = useCallback(async (tweetId: string, timestamp: number) => {
     const priceData = await fetchMultiTimeframePricesClient(timestamp);
-    setTweets(prevTweets => 
-      prevTweets.map(tweet => 
+    
+    setTweets(prevTweets => {
+      const updatedTweets = prevTweets.map(tweet => 
         tweet.id === tweetId 
           ? { ...tweet, ...priceData }
           : tweet
-      )
-    );
+      );
+      
+      // Save to Supabase
+      const updatedTweet = updatedTweets.find(t => t.id === tweetId);
+      if (updatedTweet) {
+        saveTweetImpact({
+          id: updatedTweet.id,
+          text: updatedTweet.text,
+          createdAt: updatedTweet.createdAt,
+          timestamp: updatedTweet.timestamp,
+          url: updatedTweet.url || null,
+          priceAtT: updatedTweet.priceAtT,
+          timeframes: updatedTweet.timeframes,
+          impactScore: updatedTweet.impactScore,
+          impactDirection: updatedTweet.impactDirection,
+        }).catch(err => console.error("Failed to save to Supabase:", err));
+      }
+      
+      return updatedTweets;
+    });
   }, []);
 
   useEffect(() => {
@@ -428,9 +448,14 @@ function useNewsFeed() {
         setLoading(true);
         setError(null);
 
-        console.log("Fetching tweets from API...");
-        
-        // Fetch tweets
+        // Step 1: Fetch stored tweets from Supabase first
+        console.log("Fetching stored tweets from Supabase...");
+        const storedTweets = await getStoredTweets();
+        const storedTweetsMap = new Map(storedTweets.map(t => [t.id, storedTweetToAppFormat(t)]));
+        console.log(`Found ${storedTweets.length} tweets in Supabase`);
+
+        // Step 2: Fetch fresh tweets from X API
+        console.log("Fetching tweets from X API...");
         const tweetsRes = await fetch("/api/tweets");
         if (!tweetsRes.ok) {
           throw new Error(`Failed to fetch tweets: ${tweetsRes.status}`);
@@ -440,13 +465,20 @@ function useNewsFeed() {
         console.log("Tweets API response:", tweetsData);
 
         if (tweetsData.error && (!tweetsData.tweets || tweetsData.tweets.length === 0)) {
+          // If X API fails but we have stored tweets, use those
+          if (storedTweets.length > 0) {
+            console.log("X API failed, using stored tweets from Supabase");
+            setTweets(storedTweets.map(t => storedTweetToAppFormat(t) as TweetWithPrice));
+            setSource("Supabase (cached)");
+            setLoading(false);
+            return;
+          }
           throw new Error(tweetsData.error);
         }
 
         const rawTweets = tweetsData.tweets || [];
-        console.log(`Received ${rawTweets.length} tweets`);
+        console.log(`Received ${rawTweets.length} tweets from X API`);
         
-        // Track if we're using demo data
         if (tweetsData.isDemo) {
           setIsDemo(true);
         }
@@ -454,7 +486,7 @@ function useNewsFeed() {
           setSource(tweetsData.source);
         }
         
-        if (rawTweets.length === 0) {
+        if (rawTweets.length === 0 && storedTweets.length === 0) {
           setTweets([]);
           setLoading(false);
           return;
@@ -462,53 +494,84 @@ function useNewsFeed() {
 
         const now = Date.now();
 
-        // Initialize tweets without price data first (show UI immediately)
-        const initialTweets: TweetWithPrice[] = rawTweets.map(
-          (tweet: { id: string; text: string; createdAt: string; timestamp: number; url?: string }) => ({
-            ...tweet,
-            priceAtT: null,
-            timeframes: { ...EMPTY_TIMEFRAMES },
-            impactScore: 0,
-            impactDirection: "neutral" as const,
-          })
+        // Step 3: Merge tweets - use Supabase data if available, otherwise initialize
+        const mergedTweets: TweetWithPrice[] = rawTweets.map(
+          (tweet: { id: string; text: string; createdAt: string; timestamp: number; url?: string }) => {
+            const stored = storedTweetsMap.get(tweet.id);
+            if (stored) {
+              // Use stored data from Supabase
+              return stored as TweetWithPrice;
+            }
+            // New tweet, initialize with empty data
+            return {
+              ...tweet,
+              priceAtT: null,
+              timeframes: { ...EMPTY_TIMEFRAMES },
+              impactScore: 0,
+              impactDirection: "neutral" as const,
+            };
+          }
         );
-        setTweets(initialTweets);
+        
+        setTweets(mergedTweets);
         setLoading(false);
 
-        // Fetch price data client-side (Binance blocks server-side requests)
-        console.log("Fetching prices client-side from Binance...");
+        // Step 4: Fetch prices only for tweets that need it
+        console.log("Checking for tweets that need price data...");
         
-        for (let i = 0; i < rawTweets.length; i++) {
-          const tweet = rawTweets[i];
+        for (let i = 0; i < mergedTweets.length; i++) {
+          const tweet = mergedTweets[i];
           
-          // Skip if timestamp is invalid (0 or in the future)
+          // Skip if timestamp is invalid
           if (!tweet.timestamp || tweet.timestamp <= 0 || tweet.timestamp > now) {
-            console.log(`Skipping tweet ${tweet.id}: invalid timestamp ${tweet.timestamp}`);
+            continue;
+          }
+          
+          // Check if this tweet needs price fetching
+          const needsPriceFetch = 
+            tweet.priceAtT === null ||
+            tweet.timeframes["1m"].pending ||
+            tweet.timeframes["10m"].pending ||
+            tweet.timeframes["30m"].pending ||
+            tweet.timeframes["1h"].pending;
+          
+          if (!needsPriceFetch) {
+            console.log(`Tweet ${tweet.id} already has complete price data, skipping`);
             continue;
           }
           
           try {
-            console.log(`Fetching prices for tweet ${i + 1}/${rawTweets.length}: ${new Date(tweet.timestamp).toISOString()}`);
+            console.log(`Fetching prices for tweet ${i + 1}/${mergedTweets.length}: ${new Date(tweet.timestamp).toISOString()}`);
             
-            // Fetch prices directly from Binance (client-side)
             const priceData = await fetchMultiTimeframePricesClient(tweet.timestamp);
 
             console.log(`Price data for tweet ${tweet.id}:`, priceData);
 
-            // Update this specific tweet with price data
+            // Update tweet with price data
+            const updatedTweet = {
+              ...tweet,
+              ...priceData,
+            };
+
             setTweets(prevTweets =>
-              prevTweets.map(t =>
-                t.id === tweet.id
-                  ? {
-                      ...t,
-                      ...priceData,
-                    }
-                  : t
-              )
+              prevTweets.map(t => t.id === tweet.id ? updatedTweet : t)
             );
 
-            // Throttle: wait before next request
-            if (i < rawTweets.length - 1) {
+            // Save to Supabase
+            await saveTweetImpact({
+              id: updatedTweet.id,
+              text: updatedTweet.text,
+              createdAt: updatedTweet.createdAt,
+              timestamp: updatedTweet.timestamp,
+              url: updatedTweet.url || null,
+              priceAtT: updatedTweet.priceAtT,
+              timeframes: updatedTweet.timeframes,
+              impactScore: updatedTweet.impactScore,
+              impactDirection: updatedTweet.impactDirection,
+            });
+
+            // Throttle
+            if (i < mergedTweets.length - 1) {
               await delay(PRICE_FETCH_DELAY_MS);
             }
           } catch (err) {
@@ -516,7 +579,7 @@ function useNewsFeed() {
           }
         }
         
-        console.log("Finished fetching all prices");
+        console.log("Finished processing all tweets");
       } catch (err) {
         console.error("Error in fetchTweetsWithPrices:", err);
         setError(err instanceof Error ? err.message : "Unknown error");
