@@ -1,20 +1,21 @@
 import { NextResponse } from "next/server";
 
-// Financial Modeling Prep Economic Calendar API
-const FMP_API_KEY = process.env.FMP_API_KEY;
+// Finnhub Economic Calendar API (free tier available)
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
-interface FMPEvent {
-  date: string;
-  country: string;
-  event: string;
-  currency: string;
-  previous: number | null;
-  estimate: number | null;
+interface FinnhubEvent {
   actual: number | null;
-  change: number | null;
+  country: string;
+  estimate: number | null;
+  event: string;
   impact: string;
-  changePercentage: number | null;
+  prev: number | null;
+  time: string;
   unit: string;
+}
+
+interface FinnhubResponse {
+  economicCalendar: FinnhubEvent[];
 }
 
 // High-impact event keywords
@@ -38,31 +39,34 @@ const HIGH_IMPACT_KEYWORDS = [
   "ISM Manufacturing",
   "Core CPI",
   "Core PCE",
+  "Initial Jobless Claims",
+  "PPI",
+  "Producer Price",
 ];
 
 // Filter for high-impact events
-function isHighImpact(event: FMPEvent): boolean {
+function isHighImpact(event: FinnhubEvent): boolean {
   const eventLower = event.event.toLowerCase();
   return (
     HIGH_IMPACT_KEYWORDS.some((keyword) =>
       eventLower.includes(keyword.toLowerCase())
     ) ||
-    event.impact === "High" ||
-    event.impact === "high"
+    event.impact === "high" ||
+    event.impact === "medium"
   );
 }
 
 export async function GET() {
   try {
     // Debug: Check if API key is configured
-    const hasApiKey = !!FMP_API_KEY;
-    const keyLength = FMP_API_KEY?.length || 0;
-    
-    if (!FMP_API_KEY) {
+    const hasApiKey = !!FINNHUB_API_KEY;
+    const keyLength = FINNHUB_API_KEY?.length || 0;
+
+    if (!FINNHUB_API_KEY) {
       // Return demo data if no API key
       return NextResponse.json({
         events: getDemoEvents(),
-        source: "Demo Data (FMP_API_KEY not configured)",
+        source: "Demo Data (FINNHUB_API_KEY not configured)",
         isDemo: true,
         debug: { hasApiKey, keyLength },
       });
@@ -78,10 +82,10 @@ export async function GET() {
     const fromStr = pastDate.toISOString().split("T")[0];
     const toStr = futureDate.toISOString().split("T")[0];
 
-    const url = `https://financialmodelingprep.com/api/v3/economic_calendar?from=${fromStr}&to=${toStr}&apikey=${FMP_API_KEY}`;
+    const url = `https://finnhub.io/api/v1/calendar/economic?from=${fromStr}&to=${toStr}&token=${FINNHUB_API_KEY}`;
 
     const response = await fetch(url, {
-      cache: "no-store", // Don't cache during debugging
+      cache: "no-store",
     });
 
     if (!response.ok) {
@@ -90,8 +94,8 @@ export async function GET() {
         events: getDemoEvents(),
         source: `Demo Data (API returned ${response.status})`,
         isDemo: true,
-        debug: { 
-          hasApiKey: true, 
+        debug: {
+          hasApiKey: true,
           keyLength,
           status: response.status,
           error: errorText.slice(0, 200),
@@ -99,49 +103,54 @@ export async function GET() {
       });
     }
 
-    const data: FMPEvent[] = await response.json();
+    const data: FinnhubResponse = await response.json();
 
-    // Check if API returned an error message
-    if (!Array.isArray(data)) {
+    // Check if API returned valid data
+    if (!data.economicCalendar || !Array.isArray(data.economicCalendar)) {
       return NextResponse.json({
         events: getDemoEvents(),
         source: "Demo Data (Invalid API response)",
         isDemo: true,
-        debug: { 
-          hasApiKey: true, 
+        debug: {
+          hasApiKey: true,
           keyLength,
           response: JSON.stringify(data).slice(0, 200),
         },
       });
     }
 
-    // Filter for high-impact USD events
-    const highImpactEvents = data
-      .filter((e) => e.currency === "USD" && isHighImpact(e))
-      .map((e) => ({
-        id: `${e.date}-${e.event}`.replace(/\s+/g, "-").toLowerCase(),
-        name: e.event,
-        currency: e.currency,
-        country: e.country,
-        date: e.date,
-        timestamp: new Date(e.date).getTime(),
-        previous: e.previous,
-        forecast: e.estimate,
-        actual: e.actual,
-        impact: e.impact,
-        unit: e.unit || "",
-      }))
+    // Filter for high-impact US events
+    const highImpactEvents = data.economicCalendar
+      .filter((e) => e.country === "US" && isHighImpact(e))
+      .map((e) => {
+        // Parse the timestamp - Finnhub uses "YYYY-MM-DD HH:MM:SS" format
+        const timestamp = new Date(e.time.replace(" ", "T") + "Z").getTime();
+        
+        return {
+          id: `${e.time}-${e.event}`.replace(/[\s:]+/g, "-").toLowerCase(),
+          name: e.event,
+          currency: "USD",
+          country: e.country,
+          date: new Date(timestamp).toISOString(),
+          timestamp,
+          previous: e.prev,
+          forecast: e.estimate,
+          actual: e.actual,
+          impact: e.impact,
+          unit: e.unit || "",
+        };
+      })
       .sort((a, b) => a.timestamp - b.timestamp)
       .slice(0, 20); // Limit to 20 events
 
     return NextResponse.json({
       events: highImpactEvents,
-      source: "Financial Modeling Prep",
+      source: "Finnhub",
       isDemo: false,
-      debug: { 
-        hasApiKey: true, 
+      debug: {
+        hasApiKey: true,
         keyLength,
-        totalEvents: data.length,
+        totalEvents: data.economicCalendar.length,
         filteredEvents: highImpactEvents.length,
       },
     });
@@ -153,9 +162,9 @@ export async function GET() {
       events: getDemoEvents(),
       source: "Demo Data (API Error)",
       isDemo: true,
-      debug: { 
-        hasApiKey: !!FMP_API_KEY,
-        keyLength: FMP_API_KEY?.length || 0,
+      debug: {
+        hasApiKey: !!FINNHUB_API_KEY,
+        keyLength: FINNHUB_API_KEY?.length || 0,
         error: error instanceof Error ? error.message : "Unknown error",
       },
     });
@@ -178,7 +187,7 @@ function getDemoEvents() {
       previous: 0.3,
       forecast: 0.2,
       actual: null,
-      impact: "High",
+      impact: "high",
       unit: "%",
     },
     {
@@ -191,7 +200,7 @@ function getDemoEvents() {
       previous: 3.3,
       forecast: 3.3,
       actual: null,
-      impact: "High",
+      impact: "high",
       unit: "%",
     },
     {
@@ -204,7 +213,7 @@ function getDemoEvents() {
       previous: 4.5,
       forecast: 4.5,
       actual: null,
-      impact: "High",
+      impact: "high",
       unit: "%",
     },
     {
@@ -217,7 +226,7 @@ function getDemoEvents() {
       previous: 227,
       forecast: 180,
       actual: null,
-      impact: "High",
+      impact: "high",
       unit: "K",
     },
     {
@@ -230,7 +239,7 @@ function getDemoEvents() {
       previous: 2.8,
       forecast: 2.6,
       actual: null,
-      impact: "High",
+      impact: "high",
       unit: "%",
     },
     {
@@ -243,7 +252,7 @@ function getDemoEvents() {
       previous: 0.1,
       forecast: 0.2,
       actual: 0.2,
-      impact: "High",
+      impact: "high",
       unit: "%",
     },
     {
@@ -256,9 +265,8 @@ function getDemoEvents() {
       previous: 0.7,
       forecast: 0.5,
       actual: 0.4,
-      impact: "High",
+      impact: "high",
       unit: "%",
     },
   ];
 }
-
