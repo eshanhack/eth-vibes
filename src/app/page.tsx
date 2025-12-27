@@ -2,7 +2,14 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { motion, LayoutGroup, AnimatePresence } from "framer-motion";
-import { getStoredTweetsForAsset, saveTweetImpact, storedTweetToAppFormat } from "@/lib/supabase";
+import { 
+  getStoredTweetsForAsset, 
+  saveTweetImpact, 
+  storedTweetToAppFormat,
+  getStoredMacroEventsForAsset,
+  saveMacroEventPrices,
+  storedMacroEventToAppFormat,
+} from "@/lib/supabase";
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
 type Direction = "up" | "down";
@@ -1234,11 +1241,81 @@ const MACRO_WINDOWS = [
   { key: "1h" as const, ms: 60 * 60 * 1000, label: "1H" },
 ];
 
+// Fetch historical price from Binance klines for a specific timestamp
+async function fetchBinanceHistoricalPrice(
+  symbol: string,
+  timestamp: number
+): Promise<number | null> {
+  try {
+    // Use 1m klines, fetch 1 candle starting at the timestamp
+    const response = await fetch(
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&startTime=${timestamp}&limit=1`
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (!data || data.length === 0) return null;
+    // Return close price of the candle
+    return parseFloat(data[0][4]);
+  } catch {
+    return null;
+  }
+}
+
+// Backfill macro event prices using Binance historical data
+async function backfillMacroEventPrices(
+  event: MacroEvent,
+  asset: Asset
+): Promise<{ baselinePrice: number | null; priceWindows: MacroEventWithTracking["priceWindows"] }> {
+  const config = ASSET_CONFIG[asset];
+  const symbol = config.binanceSymbol.toUpperCase();
+  const DELAY_MS = 200; // Throttle to avoid rate limits
+  
+  const emptyWindows: MacroEventWithTracking["priceWindows"] = {
+    "1m": { price: null, change: null, locked: false },
+    "10m": { price: null, change: null, locked: false },
+    "30m": { price: null, change: null, locked: false },
+    "1h": { price: null, change: null, locked: false },
+  };
+  
+  // Fetch baseline price at event release time
+  const baselinePrice = await fetchBinanceHistoricalPrice(symbol, event.timestamp);
+  if (baselinePrice === null) {
+    return { baselinePrice: null, priceWindows: emptyWindows };
+  }
+  
+  await new Promise((r) => setTimeout(r, DELAY_MS));
+  
+  const priceWindows: MacroEventWithTracking["priceWindows"] = { ...emptyWindows };
+  const now = Date.now();
+  
+  // Fetch price at each window
+  for (const window of MACRO_WINDOWS) {
+    const windowTime = event.timestamp + window.ms;
+    
+    // Only fetch if the window time has passed
+    if (windowTime <= now) {
+      const price = await fetchBinanceHistoricalPrice(symbol, windowTime);
+      if (price !== null) {
+        const change = ((price - baselinePrice) / baselinePrice) * 100;
+        priceWindows[window.key] = {
+          price,
+          change,
+          locked: true,
+        };
+      }
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+    }
+  }
+  
+  return { baselinePrice, priceWindows };
+}
+
 function useMacroEvents(asset: Asset) {
   const [events, setEvents] = useState<MacroEventWithTracking[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDemo, setIsDemo] = useState(false);
   const currentAssetRef = useRef(asset);
+  const backfillInProgressRef = useRef(false);
 
   // Fetch current price from Binance
   const fetchCurrentPrice = useCallback(async () => {
@@ -1256,22 +1333,43 @@ function useMacroEvents(asset: Asset) {
     }
   }, [asset]);
 
-  // Initial fetch
+  // Initial fetch and backfill
   useEffect(() => {
     currentAssetRef.current = asset;
+    backfillInProgressRef.current = false;
     
-    async function fetchEvents() {
+    async function fetchAndBackfill() {
       setLoading(true);
+      
       try {
+        // 1. Fetch macro events from API
         const response = await fetch("/api/macro-events");
         const data = await response.json();
         
         if (data.isDemo) setIsDemo(true);
         
+        // 2. Fetch stored prices from Supabase for this asset
+        const storedPrices = await getStoredMacroEventsForAsset(asset);
+        const storedMap = new Map(storedPrices.map((s) => [s.id, storedMacroEventToAppFormat(s)]));
+        
         const now = Date.now();
+        
+        // 3. Create events with tracking, using stored data where available
         const eventsWithTracking: MacroEventWithTracking[] = data.events.map(
           (event: MacroEvent) => {
             const isReleased = event.actual !== null || event.timestamp <= now;
+            const stored = storedMap.get(event.id);
+            
+            if (stored && stored.baselinePrice !== null) {
+              // Use cached data
+              return {
+                ...event,
+                baselinePrice: stored.baselinePrice,
+                priceWindows: stored.priceWindows,
+                status: "complete" as const,
+              };
+            }
+            
             return {
               ...event,
               baselinePrice: null,
@@ -1287,57 +1385,68 @@ function useMacroEvents(asset: Asset) {
         );
         
         setEvents(eventsWithTracking);
+        setLoading(false);
+        
+        // 4. Backfill historical prices for events without cached data
+        if (backfillInProgressRef.current) return;
+        backfillInProgressRef.current = true;
+        
+        const eventsToBackfill = eventsWithTracking.filter(
+          (e) => e.status === "released" && e.baselinePrice === null
+        );
+        
+        for (const event of eventsToBackfill) {
+          // Check if asset changed
+          if (currentAssetRef.current !== asset) {
+            backfillInProgressRef.current = false;
+            return;
+          }
+          
+          const { baselinePrice, priceWindows } = await backfillMacroEventPrices(event, asset);
+          
+          if (baselinePrice !== null) {
+            // Update local state
+            setEvents((prev) =>
+              prev.map((e) =>
+                e.id === event.id
+                  ? { ...e, baselinePrice, priceWindows, status: "complete" as const }
+                  : e
+              )
+            );
+            
+            // Save to Supabase
+            await saveMacroEventPrices({
+              id: event.id,
+              asset,
+              baselinePrice,
+              priceWindows,
+            });
+          }
+        }
+        
+        backfillInProgressRef.current = false;
       } catch (error) {
         console.error("Failed to fetch macro events:", error);
+        setLoading(false);
       }
-      setLoading(false);
     }
     
-    fetchEvents();
+    fetchAndBackfill();
   }, [asset]);
 
-  // Update countdowns and track prices every second
+  // Update countdowns and track live prices every second
   useEffect(() => {
     const interval = setInterval(async () => {
       const now = Date.now();
       
       setEvents((prevEvents) => {
-        let needsPriceUpdate = false;
-        
         const updated = prevEvents.map((event) => {
-          // Skip if complete
+          // Skip if complete or upcoming
           if (event.status === "complete") return event;
           
           // Check if just released
           if (event.status === "upcoming" && event.timestamp <= now) {
-            needsPriceUpdate = true;
             return { ...event, status: "released" as const };
-          }
-          
-          // Check if tracking windows need updating
-          if (event.status === "released" || event.status === "tracking") {
-            const timeSinceRelease = now - event.timestamp;
-            let hasUnlockedWindows = false;
-            
-            const newWindows = { ...event.priceWindows };
-            for (const window of MACRO_WINDOWS) {
-              if (!newWindows[window.key].locked && timeSinceRelease >= window.ms) {
-                // Window time has passed but not locked yet - needs price fetch
-                needsPriceUpdate = true;
-              }
-              if (!newWindows[window.key].locked) {
-                hasUnlockedWindows = true;
-              }
-            }
-            
-            // Check if all windows are locked
-            if (!hasUnlockedWindows && event.baselinePrice !== null) {
-              return { ...event, status: "complete" as const };
-            }
-            
-            if (event.baselinePrice !== null) {
-              return { ...event, status: "tracking" as const };
-            }
           }
           
           return event;
@@ -1346,7 +1455,7 @@ function useMacroEvents(asset: Asset) {
         return updated;
       });
       
-      // Fetch prices for events that need it
+      // Fetch current price for live tracking
       const currentPrice = await fetchCurrentPrice();
       if (currentPrice === null) return;
       
@@ -1354,34 +1463,50 @@ function useMacroEvents(asset: Asset) {
         const now = Date.now();
         
         return prevEvents.map((event) => {
-          // Set baseline price when event releases
-          if (
-            (event.status === "released" || event.status === "tracking") &&
-            event.baselinePrice === null
-          ) {
+          // Skip if complete or upcoming
+          if (event.status === "complete" || event.status === "upcoming") return event;
+          
+          // Set baseline price when event just released (live tracking)
+          if (event.baselinePrice === null && event.status === "released") {
             return { ...event, baselinePrice: currentPrice, status: "tracking" as const };
           }
           
-          // Update unlocked windows
+          // Update unlocked windows for live tracking
           if (event.status === "tracking" && event.baselinePrice !== null) {
             const timeSinceRelease = now - event.timestamp;
             const newWindows = { ...event.priceWindows };
             let changed = false;
+            let allLocked = true;
             
             for (const window of MACRO_WINDOWS) {
               if (!newWindows[window.key].locked) {
                 const change = ((currentPrice - event.baselinePrice) / event.baselinePrice) * 100;
+                const shouldLock = timeSinceRelease >= window.ms;
                 newWindows[window.key] = {
                   price: currentPrice,
                   change,
-                  locked: timeSinceRelease >= window.ms,
+                  locked: shouldLock,
                 };
                 changed = true;
+                if (!shouldLock) allLocked = false;
               }
             }
             
             if (changed) {
-              return { ...event, priceWindows: newWindows };
+              const newStatus = allLocked ? "complete" as const : "tracking" as const;
+              const updatedEvent = { ...event, priceWindows: newWindows, status: newStatus };
+              
+              // Save to Supabase when tracking completes
+              if (newStatus === "complete") {
+                saveMacroEventPrices({
+                  id: event.id,
+                  asset: currentAssetRef.current,
+                  baselinePrice: event.baselinePrice,
+                  priceWindows: newWindows,
+                });
+              }
+              
+              return updatedEvent;
             }
           }
           

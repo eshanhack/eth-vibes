@@ -191,3 +191,94 @@ export function storedTweetToAppFormat(stored: StoredTweet) {
   };
 }
 
+// ============================================
+// MACRO EVENTS - Store historical price data
+// ============================================
+
+export interface StoredMacroEvent {
+  id: string; // event ID like "fomc-2025-12-17"
+  asset: Asset;
+  baseline_price: number | null;
+  window_1m: { price: number | null; change: number | null; locked: boolean } | null;
+  window_10m: { price: number | null; change: number | null; locked: boolean } | null;
+  window_30m: { price: number | null; change: number | null; locked: boolean } | null;
+  window_1h: { price: number | null; change: number | null; locked: boolean } | null;
+  updated_at: string;
+}
+
+// Fetch stored macro event prices for a specific asset
+export async function getStoredMacroEventsForAsset(asset: Asset): Promise<StoredMacroEvent[]> {
+  const supabase = getSupabase();
+  if (!supabase) {
+    console.log('Supabase not configured, skipping macro events fetch');
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from('macro_events')
+    .select('*')
+    .eq('asset', asset);
+
+  if (error) {
+    console.error('Error fetching macro events from Supabase:', error);
+    return [];
+  }
+
+  return data || [];
+}
+
+// Save or update macro event price data
+export async function saveMacroEventPrices(event: {
+  id: string;
+  asset: Asset;
+  baselinePrice: number | null;
+  priceWindows: {
+    '1m': { price: number | null; change: number | null; locked: boolean };
+    '10m': { price: number | null; change: number | null; locked: boolean };
+    '30m': { price: number | null; change: number | null; locked: boolean };
+    '1h': { price: number | null; change: number | null; locked: boolean };
+  };
+}): Promise<boolean> {
+  const supabase = getSupabase();
+  if (!supabase) {
+    console.log('Supabase not configured, skipping macro event save');
+    return false;
+  }
+
+  // Upsert - insert or update
+  const { error } = await supabase
+    .from('macro_events')
+    .upsert({
+      id: event.id,
+      asset: event.asset,
+      baseline_price: event.baselinePrice,
+      window_1m: event.priceWindows['1m'],
+      window_10m: event.priceWindows['10m'],
+      window_30m: event.priceWindows['30m'],
+      window_1h: event.priceWindows['1h'],
+      updated_at: new Date().toISOString(),
+    }, {
+      onConflict: 'id,asset',
+    });
+
+  if (error) {
+    console.error('Error saving macro event to Supabase:', error);
+    return false;
+  }
+
+  return true;
+}
+
+// Convert stored macro event to app format
+export function storedMacroEventToAppFormat(stored: StoredMacroEvent) {
+  return {
+    baselinePrice: stored.baseline_price,
+    priceWindows: {
+      '1m': stored.window_1m || { price: null, change: null, locked: false },
+      '10m': stored.window_10m || { price: null, change: null, locked: false },
+      '30m': stored.window_30m || { price: null, change: null, locked: false },
+      '1h': stored.window_1h || { price: null, change: null, locked: false },
+    },
+  };
+}
+
