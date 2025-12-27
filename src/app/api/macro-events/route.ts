@@ -1,311 +1,407 @@
 import { NextResponse } from "next/server";
 
-// Twelve Data Economic Calendar API (free tier: 800 calls/day)
-const TWELVEDATA_API_KEY = process.env.TWELVEDATA_API_KEY;
+// Hardcoded US Economic Calendar for 2025
+// Sources: BLS, Federal Reserve, BEA release schedules
+// These are the REAL scheduled release dates
 
-interface TwelveDataEvent {
-  event: string;
-  country: string;
-  actual: string | null;
-  previous: string | null;
-  consensus: string | null;
-  date: string;
-  time: string;
-  impact: string;
+interface MacroEvent {
+  id: string;
+  name: string;
   currency: string;
+  country: string;
+  date: string; // ISO date string
+  timestamp: number;
+  previous: number | null;
+  forecast: number | null;
+  actual: number | null;
+  impact: string;
+  unit: string;
 }
 
-interface TwelveDataResponse {
-  data?: TwelveDataEvent[];
-  status?: string;
-  message?: string;
-}
+// All times are in ET, converted to UTC
+// CPI/PPI: 8:30 AM ET = 13:30 UTC
+// FOMC: 2:00 PM ET = 19:00 UTC  
+// NFP: 8:30 AM ET = 13:30 UTC
+// GDP: 8:30 AM ET = 13:30 UTC
 
-// High-impact event keywords
-const HIGH_IMPACT_KEYWORDS = [
-  "CPI",
-  "Consumer Price Index",
-  "NFP",
-  "Non-Farm Payrolls",
-  "Nonfarm Payrolls",
-  "Employment Change",
-  "FOMC",
-  "Interest Rate",
-  "Fed Funds",
-  "Federal Funds",
-  "GDP",
-  "Gross Domestic Product",
-  "PCE",
-  "Personal Consumption",
-  "Retail Sales",
-  "Unemployment Rate",
-  "PMI",
-  "ISM Manufacturing",
-  "Core CPI",
-  "Core PCE",
-  "Initial Jobless Claims",
-  "Jobless Claims",
-  "PPI",
-  "Producer Price",
-  "Housing Starts",
-  "Durable Goods",
+const ECONOMIC_CALENDAR_2025: Omit<MacroEvent, "timestamp">[] = [
+  // December 2024 (for recent context)
+  {
+    id: "fomc-2024-12-18",
+    name: "FOMC Interest Rate Decision",
+    currency: "USD",
+    country: "US",
+    date: "2024-12-18T19:00:00Z",
+    previous: 4.75,
+    forecast: 4.50,
+    actual: 4.50,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "gdp-2024-q3-final",
+    name: "GDP Growth Rate QoQ Final",
+    currency: "USD",
+    country: "US",
+    date: "2024-12-19T13:30:00Z",
+    previous: 3.0,
+    forecast: 2.8,
+    actual: 3.1,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "pce-2024-11",
+    name: "Core PCE Price Index MoM",
+    currency: "USD",
+    country: "US",
+    date: "2024-12-20T13:30:00Z",
+    previous: 0.3,
+    forecast: 0.2,
+    actual: 0.1,
+    impact: "high",
+    unit: "%",
+  },
+  
+  // January 2025
+  {
+    id: "nfp-2025-01-10",
+    name: "Nonfarm Payrolls",
+    currency: "USD",
+    country: "US",
+    date: "2025-01-10T13:30:00Z",
+    previous: 227,
+    forecast: 160,
+    actual: null,
+    impact: "high",
+    unit: "K",
+  },
+  {
+    id: "cpi-2025-01-15",
+    name: "CPI MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-01-15T13:30:00Z",
+    previous: 0.3,
+    forecast: 0.3,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "core-cpi-2025-01-15",
+    name: "Core CPI YoY",
+    currency: "USD",
+    country: "US",
+    date: "2025-01-15T13:30:01Z",
+    previous: 3.3,
+    forecast: 3.3,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "ppi-2025-01-14",
+    name: "PPI MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-01-14T13:30:00Z",
+    previous: 0.4,
+    forecast: 0.3,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "retail-2025-01-16",
+    name: "Retail Sales MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-01-16T13:30:00Z",
+    previous: 0.7,
+    forecast: 0.5,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "fomc-2025-01-29",
+    name: "FOMC Interest Rate Decision",
+    currency: "USD",
+    country: "US",
+    date: "2025-01-29T19:00:00Z",
+    previous: 4.50,
+    forecast: 4.50,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "gdp-2025-q4-adv",
+    name: "GDP Growth Rate QoQ Advance",
+    currency: "USD",
+    country: "US",
+    date: "2025-01-30T13:30:00Z",
+    previous: 3.1,
+    forecast: 2.5,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "pce-2025-01-31",
+    name: "Core PCE Price Index MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-01-31T13:30:00Z",
+    previous: 0.1,
+    forecast: 0.2,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+
+  // February 2025
+  {
+    id: "nfp-2025-02-07",
+    name: "Nonfarm Payrolls",
+    currency: "USD",
+    country: "US",
+    date: "2025-02-07T13:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "K",
+  },
+  {
+    id: "cpi-2025-02-12",
+    name: "CPI MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-02-12T13:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "core-cpi-2025-02-12",
+    name: "Core CPI YoY",
+    currency: "USD",
+    country: "US",
+    date: "2025-02-12T13:30:01Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "ppi-2025-02-13",
+    name: "PPI MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-02-13T13:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "retail-2025-02-14",
+    name: "Retail Sales MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-02-14T13:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "gdp-2025-q4-second",
+    name: "GDP Growth Rate QoQ Second",
+    currency: "USD",
+    country: "US",
+    date: "2025-02-27T13:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "pce-2025-02-28",
+    name: "Core PCE Price Index MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-02-28T13:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+
+  // March 2025
+  {
+    id: "nfp-2025-03-07",
+    name: "Nonfarm Payrolls",
+    currency: "USD",
+    country: "US",
+    date: "2025-03-07T13:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "K",
+  },
+  {
+    id: "cpi-2025-03-12",
+    name: "CPI MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-03-12T13:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "core-cpi-2025-03-12",
+    name: "Core CPI YoY",
+    currency: "USD",
+    country: "US",
+    date: "2025-03-12T13:30:01Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "ppi-2025-03-13",
+    name: "PPI MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-03-13T13:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "retail-2025-03-17",
+    name: "Retail Sales MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-03-17T12:30:00Z", // Note: DST change
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "fomc-2025-03-19",
+    name: "FOMC Interest Rate Decision",
+    currency: "USD",
+    country: "US",
+    date: "2025-03-19T18:00:00Z", // Note: DST
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "gdp-2025-q4-final",
+    name: "GDP Growth Rate QoQ Final",
+    currency: "USD",
+    country: "US",
+    date: "2025-03-27T12:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "pce-2025-03-28",
+    name: "Core PCE Price Index MoM",
+    currency: "USD",
+    country: "US",
+    date: "2025-03-28T12:30:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+
+  // April-May 2025 FOMC
+  {
+    id: "fomc-2025-05-07",
+    name: "FOMC Interest Rate Decision",
+    currency: "USD",
+    country: "US",
+    date: "2025-05-07T18:00:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
+  {
+    id: "fomc-2025-06-18",
+    name: "FOMC Interest Rate Decision",
+    currency: "USD",
+    country: "US",
+    date: "2025-06-18T18:00:00Z",
+    previous: null,
+    forecast: null,
+    actual: null,
+    impact: "high",
+    unit: "%",
+  },
 ];
-
-// Filter for high-impact events
-function isHighImpact(event: TwelveDataEvent): boolean {
-  const eventLower = event.event.toLowerCase();
-  return (
-    HIGH_IMPACT_KEYWORDS.some((keyword) =>
-      eventLower.includes(keyword.toLowerCase())
-    ) ||
-    event.impact === "high" ||
-    event.impact === "High"
-  );
-}
-
-// Parse numeric value from string (handles "0.3%", "227K", etc.)
-function parseValue(val: string | null): number | null {
-  if (!val || val === "" || val === "-") return null;
-  const cleaned = val.replace(/[%KMB,]/g, "").trim();
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? null : num;
-}
-
-// Extract unit from value string
-function extractUnit(val: string | null): string {
-  if (!val) return "";
-  if (val.includes("%")) return "%";
-  if (val.includes("K")) return "K";
-  if (val.includes("M")) return "M";
-  if (val.includes("B")) return "B";
-  return "";
-}
 
 export async function GET() {
   try {
-    // Debug: Check if API key is configured
-    const hasApiKey = !!TWELVEDATA_API_KEY;
-    const keyLength = TWELVEDATA_API_KEY?.length || 0;
+    const now = Date.now();
+    
+    // Filter events: show past 7 days and next 30 days
+    const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+    const thirtyDaysFromNow = now + 30 * 24 * 60 * 60 * 1000;
 
-    if (!TWELVEDATA_API_KEY) {
-      // Return demo data if no API key
-      return NextResponse.json({
-        events: getDemoEvents(),
-        source: "Demo Data (TWELVEDATA_API_KEY not configured)",
-        isDemo: true,
-        debug: { hasApiKey, keyLength },
-      });
-    }
-
-    // Twelve Data uses a single endpoint that returns upcoming events
-    const url = `https://api.twelvedata.com/economic_calendar?country=United States&apikey=${TWELVEDATA_API_KEY}`;
-
-    const response = await fetch(url, {
-      cache: "no-store",
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      return NextResponse.json({
-        events: getDemoEvents(),
-        source: `Demo Data (API returned ${response.status})`,
-        isDemo: true,
-        debug: {
-          hasApiKey: true,
-          keyLength,
-          status: response.status,
-          error: errorText.slice(0, 200),
-        },
-      });
-    }
-
-    const data: TwelveDataResponse = await response.json();
-
-    // Check for API error response
-    if (data.status === "error") {
-      return NextResponse.json({
-        events: getDemoEvents(),
-        source: `Demo Data (${data.message || "API Error"})`,
-        isDemo: true,
-        debug: {
-          hasApiKey: true,
-          keyLength,
-          apiMessage: data.message,
-        },
-      });
-    }
-
-    // Check if API returned valid data
-    if (!data.data || !Array.isArray(data.data)) {
-      return NextResponse.json({
-        events: getDemoEvents(),
-        source: "Demo Data (Invalid API response)",
-        isDemo: true,
-        debug: {
-          hasApiKey: true,
-          keyLength,
-          response: JSON.stringify(data).slice(0, 200),
-        },
-      });
-    }
-
-    // Filter for high-impact US events
-    const highImpactEvents = data.data
-      .filter((e) => isHighImpact(e))
-      .map((e) => {
-        // Parse the timestamp - Twelve Data uses separate date and time fields
-        // Date format: "2024-01-15", Time format: "08:30:00" or "All Day"
-        let timestamp: number;
-        if (e.time && e.time !== "All Day") {
-          timestamp = new Date(`${e.date}T${e.time}Z`).getTime();
-        } else {
-          // Default to 8:30 AM ET (13:30 UTC) for "All Day" events
-          timestamp = new Date(`${e.date}T13:30:00Z`).getTime();
-        }
-
-        const unit = extractUnit(e.actual) || extractUnit(e.consensus) || extractUnit(e.previous);
-
-        return {
-          id: `${e.date}-${e.event}`.replace(/[\s:]+/g, "-").toLowerCase(),
-          name: e.event,
-          currency: e.currency || "USD",
-          country: e.country,
-          date: new Date(timestamp).toISOString(),
-          timestamp,
-          previous: parseValue(e.previous),
-          forecast: parseValue(e.consensus),
-          actual: parseValue(e.actual),
-          impact: e.impact?.toLowerCase() || "medium",
-          unit,
-        };
-      })
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .slice(0, 20); // Limit to 20 events
+    const events: MacroEvent[] = ECONOMIC_CALENDAR_2025
+      .map((event) => ({
+        ...event,
+        timestamp: new Date(event.date).getTime(),
+      }))
+      .filter((event) => event.timestamp >= sevenDaysAgo && event.timestamp <= thirtyDaysFromNow)
+      .sort((a, b) => a.timestamp - b.timestamp);
 
     return NextResponse.json({
-      events: highImpactEvents,
-      source: "Twelve Data",
+      events,
+      source: "US Economic Calendar 2025",
       isDemo: false,
-      debug: {
-        hasApiKey: true,
-        keyLength,
-        totalEvents: data.data.length,
-        filteredEvents: highImpactEvents.length,
-      },
+      lastUpdated: "2024-12-27",
     });
   } catch (error) {
-    console.error("Error fetching macro events:", error);
+    console.error("Error processing macro events:", error);
 
-    // Return demo data on error
     return NextResponse.json({
-      events: getDemoEvents(),
-      source: "Demo Data (API Error)",
+      events: [],
+      source: "Error",
       isDemo: true,
-      debug: {
-        hasApiKey: !!TWELVEDATA_API_KEY,
-        keyLength: TWELVEDATA_API_KEY?.length || 0,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
+      error: error instanceof Error ? error.message : "Unknown error",
     });
   }
-}
-
-function getDemoEvents() {
-  const now = Date.now();
-  const hour = 60 * 60 * 1000;
-  const day = 24 * hour;
-
-  return [
-    {
-      id: "us-cpi-dec",
-      name: "CPI (MoM)",
-      currency: "USD",
-      country: "US",
-      date: new Date(now + 2 * hour).toISOString(),
-      timestamp: now + 2 * hour,
-      previous: 0.3,
-      forecast: 0.2,
-      actual: null,
-      impact: "high",
-      unit: "%",
-    },
-    {
-      id: "us-core-cpi-dec",
-      name: "Core CPI (YoY)",
-      currency: "USD",
-      country: "US",
-      date: new Date(now + 2 * hour + 1000).toISOString(),
-      timestamp: now + 2 * hour + 1000,
-      previous: 3.3,
-      forecast: 3.3,
-      actual: null,
-      impact: "high",
-      unit: "%",
-    },
-    {
-      id: "fomc-rate-decision",
-      name: "FOMC Interest Rate Decision",
-      currency: "USD",
-      country: "US",
-      date: new Date(now + 1 * day).toISOString(),
-      timestamp: now + 1 * day,
-      previous: 4.5,
-      forecast: 4.5,
-      actual: null,
-      impact: "high",
-      unit: "%",
-    },
-    {
-      id: "us-nfp-jan",
-      name: "Nonfarm Payrolls",
-      currency: "USD",
-      country: "US",
-      date: new Date(now + 3 * day).toISOString(),
-      timestamp: now + 3 * day,
-      previous: 227,
-      forecast: 180,
-      actual: null,
-      impact: "high",
-      unit: "K",
-    },
-    {
-      id: "us-gdp-q4",
-      name: "GDP Growth Rate (QoQ)",
-      currency: "USD",
-      country: "US",
-      date: new Date(now + 5 * day).toISOString(),
-      timestamp: now + 5 * day,
-      previous: 2.8,
-      forecast: 2.6,
-      actual: null,
-      impact: "high",
-      unit: "%",
-    },
-    {
-      id: "us-pce-dec",
-      name: "Core PCE Price Index (MoM)",
-      currency: "USD",
-      country: "US",
-      date: new Date(now - 1 * hour).toISOString(),
-      timestamp: now - 1 * hour,
-      previous: 0.1,
-      forecast: 0.2,
-      actual: 0.2,
-      impact: "high",
-      unit: "%",
-    },
-    {
-      id: "us-retail-dec",
-      name: "Retail Sales (MoM)",
-      currency: "USD",
-      country: "US",
-      date: new Date(now - 2 * day).toISOString(),
-      timestamp: now - 2 * day,
-      previous: 0.7,
-      forecast: 0.5,
-      actual: 0.4,
-      impact: "high",
-      unit: "%",
-    },
-  ];
 }
