@@ -1551,11 +1551,11 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
           <span className="text-neutral-500 text-[9px]">
             {event.currency} • {event.impact}
           </span>
-        </div>
+    </div>
       </td>
       
       {/* Countdown / Actual */}
-      <td className="py-2.5 px-3 border-r border-neutral-800/30 text-center min-w-[120px]">
+      <td className="py-2.5 px-3 border-r border-neutral-800/30 text-center min-w-[130px]">
         {isUpcoming ? (
           <div className="flex flex-col items-center">
             <span className="text-cyan-400 text-sm font-mono tabular-nums tracking-wider">
@@ -1574,12 +1574,15 @@ function MacroEventRow({ event, now }: { event: MacroEventWithTracking; now: num
                   <span>F: {event.forecast ?? "—"}{event.unit}</span>
                   <span>P: {event.previous ?? "—"}{event.unit}</span>
                 </div>
+                <span className="text-neutral-600 text-[8px] mt-0.5">
+                  {new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                </span>
               </>
             ) : (
               <div className="flex flex-col items-center">
                 <span className="text-amber-400 text-[10px] font-medium">RELEASED</span>
                 <span className="text-neutral-600 text-[8px]">
-                  {formatTimeAgo(timeUntil)}
+                  {new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
                 </span>
               </div>
             )}
@@ -1659,9 +1662,9 @@ function MacroAlphaTable({ selectedAsset = "ETH" }: MacroAlphaTableProps) {
     return () => clearInterval(interval);
   }, []);
   
-  // Filter to show upcoming and recent events (past 30 days + next 60 days)
+  // Filter to show upcoming and recent events (past 40 days + next 40 days)
   const visibleEvents = useMemo(() => {
-    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000; // Past 30 days
+    const cutoff = Date.now() - 40 * 24 * 60 * 60 * 1000; // Past 40 days
     return events
       .filter((e) => e.timestamp > cutoff || e.status === "tracking")
       .sort((a, b) => a.timestamp - b.timestamp);
