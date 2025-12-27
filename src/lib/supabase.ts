@@ -20,7 +20,7 @@ function getSupabase(): SupabaseClient | null {
 }
 
 // Supported assets type (must match page.tsx)
-export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP' | 'SHFL';
+export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP';
 
 // Types for our tweet data
 export interface StoredTweet {

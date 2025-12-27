@@ -10,22 +10,29 @@ type MoveSize = "small" | "medium" | "whale" | null;
 type PriceSource = "hyperliquid" | "binance";
 
 // Supported assets
-type Asset = "BTC" | "ETH" | "SOL" | "XRP" | "SHFL";
+type Asset = "BTC" | "ETH" | "SOL" | "XRP";
 
 // Asset configuration
 const ASSET_CONFIG: Record<Asset, {
   name: string;
   symbol: string;
-  binanceSymbol: string | null;  // null for non-Binance assets
-  coingeckoId: string | null;    // null for Binance assets
+  binanceSymbol: string;
   decimals: number;
   color: string;
 }> = {
-  BTC: { name: "Bitcoin", symbol: "BTC", binanceSymbol: "btcusdt", coingeckoId: null, decimals: 2, color: "#F7931A" },
-  ETH: { name: "Ethereum", symbol: "ETH", binanceSymbol: "ethusdt", coingeckoId: null, decimals: 2, color: "#627EEA" },
-  SOL: { name: "Solana", symbol: "SOL", binanceSymbol: "solusdt", coingeckoId: null, decimals: 2, color: "#9945FF" },
-  XRP: { name: "Ripple", symbol: "XRP", binanceSymbol: "xrpusdt", coingeckoId: null, decimals: 4, color: "#23292F" },
-  SHFL: { name: "Shuffle", symbol: "SHFL", binanceSymbol: null, coingeckoId: "shuffle-2", decimals: 4, color: "#FF6B35" },
+  BTC: { name: "Bitcoin", symbol: "BTC", binanceSymbol: "btcusdt", decimals: 2, color: "#F7931A" },
+  ETH: { name: "Ethereum", symbol: "ETH", binanceSymbol: "ethusdt", decimals: 2, color: "#627EEA" },
+  SOL: { name: "Solana", symbol: "SOL", binanceSymbol: "solusdt", decimals: 2, color: "#9945FF" },
+  XRP: { name: "Ripple", symbol: "XRP", binanceSymbol: "xrpusdt", decimals: 4, color: "#23292F" },
+};
+
+// Timeframe weights for impact score calculation
+// Lower timeframes weighted higher - immediate moves more likely caused by headline
+const TIMEFRAME_WEIGHTS: Record<TimeframeKey, number> = {
+  "1m": 4,   // Highest weight - immediate reaction
+  "10m": 3,  // High weight - short-term impact
+  "30m": 2,  // Medium weight
+  "1h": 1,   // Lowest weight - could be other factors
 };
 
 // Timeframe keys for multi-timeframe analysis
@@ -61,9 +68,6 @@ const digitSpringTransition = {
 // Audio throttle interval for Binance (max 5 sounds per second = 200ms)
 const AUDIO_THROTTLE_MS = 200;
 
-// Price gap threshold for alert (0.10%)
-const GAP_ALERT_THRESHOLD = 0.10;
-
 // Favicon generator functions
 const getFaviconDefault = (symbol: string) => "data:image/svg+xml," + encodeURIComponent(`
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
@@ -96,9 +100,6 @@ interface UsePriceFeedResult {
   status: ConnectionStatus;
 }
 
-// CoinGecko polling interval for DEX tokens
-const COINGECKO_POLL_INTERVAL = 5000;
-
 function usePriceFeed(
   asset: Asset,
   source: PriceSource,
@@ -109,7 +110,6 @@ function usePriceFeed(
   const wsRef = useRef<WebSocket | null>(null);
   const prevPriceRef = useRef<number | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
   // Use ref for callback to avoid stale closure issues
   const onPriceChangeRef = useRef(onPriceChange);
@@ -140,69 +140,13 @@ function usePriceFeed(
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
 
     // Capture current values for closure
     const capturedAsset = asset;
     const capturedSource = source;
     const capturedConfig = config;
 
-    // DEX token - use CoinGecko polling
-    if (capturedConfig.coingeckoId) {
-      const fetchPrice = async () => {
-        // Skip if asset/source changed
-        if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
-          return;
-        }
-        
-        try {
-          const response = await fetch(
-            `https://api.coingecko.com/api/v3/simple/price?ids=${capturedConfig.coingeckoId}&vs_currencies=usd`
-          );
-          if (!response.ok) throw new Error("CoinGecko API error");
-          
-          // Check again after async operation
-          if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
-            return;
-          }
-          
-          const data = await response.json();
-          const newPrice = data[capturedConfig.coingeckoId!]?.usd;
-          
-          if (newPrice !== undefined) {
-            setStatus("connected");
-            if (prevPriceRef.current !== null && onPriceChangeRef.current && newPrice !== prevPriceRef.current) {
-              onPriceChangeRef.current(newPrice, prevPriceRef.current);
-            }
-            prevPriceRef.current = newPrice;
-            setPrice(newPrice);
-          }
-        } catch (e) {
-          console.error("CoinGecko fetch error:", e);
-          if (currentAssetRef.current === capturedAsset && currentSourceRef.current === capturedSource) {
-            setStatus("disconnected");
-          }
-        }
-      };
-
-      // Initial fetch
-      fetchPrice();
-      
-      // Poll every 5 seconds
-      pollIntervalRef.current = setInterval(fetchPrice, COINGECKO_POLL_INTERVAL);
-
-      return () => {
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-        }
-      };
-    }
-
-    // Major token - use WebSocket
+    // Connect to WebSocket
     const connect = () => {
       // Skip if asset/source changed
       if (currentAssetRef.current !== capturedAsset || currentSourceRef.current !== capturedSource) {
@@ -374,47 +318,6 @@ async function fetchBinancePrice(
   }
 }
 
-// CoinGecko historical price fetcher for DEX tokens
-async function fetchCoinGeckoHistoricalPrice(
-  timestamp: number,
-  coingeckoId: string
-): Promise<number | null> {
-  try {
-    // CoinGecko uses seconds, not milliseconds
-    const timestampSec = Math.floor(timestamp / 1000);
-    // Fetch a range around the timestamp
-    const from = timestampSec - 300; // 5 min before
-    const to = timestampSec + 300;   // 5 min after
-    
-    const url = `https://api.coingecko.com/api/v3/coins/${coingeckoId}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`;
-    const response = await fetch(url);
-    
-    if (!response.ok) return null;
-    
-    const data = await response.json();
-    
-    if (data.prices && data.prices.length > 0) {
-      // Find the closest price to our timestamp
-      let closest = data.prices[0];
-      let minDiff = Math.abs(data.prices[0][0] - timestamp);
-      
-      for (const [ts, price] of data.prices) {
-        const diff = Math.abs(ts - timestamp);
-        if (diff < minDiff) {
-          minDiff = diff;
-          closest = [ts, price];
-        }
-      }
-      
-      return closest[1];
-    }
-    
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 // Client-side function to fetch multi-timeframe prices
 async function fetchMultiTimeframePricesClient(
   timestamp: number,
@@ -427,19 +330,10 @@ async function fetchMultiTimeframePricesClient(
 }> {
   const now = Date.now();
   const config = ASSET_CONFIG[asset];
-  
-  // Determine fetch function based on asset type
-  const fetchPrice = async (ts: number, interval: string = "1m") => {
-    if (config.coingeckoId) {
-      return fetchCoinGeckoHistoricalPrice(ts, config.coingeckoId);
-    } else {
-      const symbol = config.binanceSymbol?.toUpperCase() || "ETHUSDT";
-      return fetchBinancePrice(ts, interval, symbol);
-    }
-  };
+  const symbol = config.binanceSymbol.toUpperCase();
   
   // Fetch base price
-  const priceAtT = await fetchPrice(timestamp);
+  const priceAtT = await fetchBinancePrice(timestamp, "1m", symbol);
   
   if (priceAtT === null) {
     return {
@@ -467,7 +361,7 @@ async function fetchMultiTimeframePricesClient(
     }
     
     await delay(100); // Small delay to avoid rate limits
-    const price = await fetchPrice(targetTime, tfConfig.interval);
+    const price = await fetchBinancePrice(targetTime, tfConfig.interval, symbol);
     
     let change: number | null = null;
     if (price !== null && priceAtT !== 0) {
@@ -477,24 +371,33 @@ async function fetchMultiTimeframePricesClient(
     timeframes[tfConfig.key] = { price, change, pending: false };
   }
 
-  // Calculate impact score
-  let positiveCount = 0;
-  let negativeCount = 0;
-  let totalMagnitude = 0;
-  let validCount = 0;
+  // Calculate weighted impact score - lower timeframes weighted higher
+  let weightedPositive = 0;
+  let weightedNegative = 0;
+  let weightedMagnitude = 0;
+  let totalWeight = 0;
 
-  for (const tf of Object.values(timeframes)) {
+  for (const [key, tf] of Object.entries(timeframes) as [TimeframeKey, TimeframeData][]) {
     if (tf.change !== null) {
-      validCount++;
-      totalMagnitude += Math.abs(tf.change);
-      if (tf.change > 0) positiveCount++;
-      else if (tf.change < 0) negativeCount++;
+      const weight = TIMEFRAME_WEIGHTS[key];
+      totalWeight += weight;
+      weightedMagnitude += Math.abs(tf.change) * weight;
+      if (tf.change > 0) weightedPositive += weight;
+      else if (tf.change < 0) weightedNegative += weight;
     }
   }
 
-  const impactDirection = positiveCount > negativeCount ? "positive" : 
-                          negativeCount > positiveCount ? "negative" : "neutral";
-  const impactScore = validCount > 0 ? (totalMagnitude / validCount) * (Math.max(positiveCount, negativeCount) / validCount) : 0;
+  // Direction based on weighted votes
+  const impactDirection = weightedPositive > weightedNegative ? "positive" : 
+                          weightedNegative > weightedPositive ? "negative" : "neutral";
+  
+  // Score = weighted average magnitude * consistency factor
+  // Consistency factor rewards when all timeframes agree on direction
+  const consistencyFactor = totalWeight > 0 
+    ? Math.max(weightedPositive, weightedNegative) / totalWeight 
+    : 0;
+  const avgWeightedMagnitude = totalWeight > 0 ? weightedMagnitude / totalWeight : 0;
+  const impactScore = avgWeightedMagnitude * consistencyFactor;
 
   return { priceAtT, timeframes, impactScore, impactDirection };
 }
@@ -906,7 +809,7 @@ function SourceSelector({ source, onSourceChange }: SourceSelectorProps) {
       >
         Binance
       </button>
-    </div>
+        </div>
   );
 }
 
@@ -916,7 +819,7 @@ interface AssetSelectorProps {
   onAssetChange: (asset: Asset) => void;
 }
 
-const ASSETS: Asset[] = ["BTC", "ETH", "SOL", "XRP", "SHFL"];
+const ASSETS: Asset[] = ["BTC", "ETH", "SOL", "XRP"];
 
 function AssetSelector({ asset, onAssetChange }: AssetSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -965,7 +868,6 @@ function AssetSelector({ asset, onAssetChange }: AssetSelectorProps) {
               {ASSETS.map((a) => {
                 const assetConfig = ASSET_CONFIG[a];
                 const isSelected = a === asset;
-                const isDexToken = assetConfig.coingeckoId !== null;
                 
                 return (
                   <button
@@ -988,11 +890,6 @@ function AssetSelector({ asset, onAssetChange }: AssetSelectorProps) {
                       <span className="text-xs tracking-wider font-medium">{a}</span>
                       <span className="text-[10px] text-white/40 ml-2">{assetConfig.name}</span>
                     </div>
-                    {isDexToken && (
-                      <span className="text-[8px] px-1 py-0.5 bg-orange-500/20 text-orange-400 rounded uppercase tracking-wider">
-                        DEX
-                      </span>
-                    )}
                     {isSelected && (
                       <svg className="w-3 h-3 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
                         <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -1015,23 +912,7 @@ interface SourceBadgeProps {
   asset: Asset;
 }
 
-function SourceBadge({ source, asset }: SourceBadgeProps) {
-  const config = ASSET_CONFIG[asset];
-  const isDexToken = config.coingeckoId !== null;
-  
-  // For DEX tokens, show CoinGecko badge
-  if (isDexToken) {
-    return (
-      <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-500/10 rounded border border-orange-500/20">
-        <div 
-          className="w-2 h-2 rounded-full"
-          style={{ backgroundColor: config.color }}
-        />
-        <span className="text-orange-400/80 text-[10px] tracking-wider uppercase font-medium">CG DEX</span>
-      </div>
-    );
-  }
-
+function SourceBadge({ source }: { source: PriceSource }) {
   if (source === "hyperliquid") {
     return (
       <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-500/10 rounded border border-emerald-500/20">
@@ -1050,60 +931,6 @@ function SourceBadge({ source, asset }: SourceBadgeProps) {
         <path d="M18 12.5L12 19L12 15L18 12.5Z" fill="#F3BA2F"/>
       </svg>
       <span className="text-yellow-500/80 text-[10px] tracking-wider uppercase font-medium">BN</span>
-    </div>
-  );
-}
-
-// Price Gap Display Component
-interface PriceGapProps {
-  primaryPrice: number | null;
-  shadowPrice: number | null;
-  primarySource: PriceSource;
-}
-
-function PriceGap({ primaryPrice, shadowPrice, primarySource }: PriceGapProps) {
-  const gap = useMemo(() => {
-    if (primaryPrice === null || shadowPrice === null) return null;
-    // Calculate percentage difference: (primary - shadow) / shadow * 100
-    const diff = ((primaryPrice - shadowPrice) / shadowPrice) * 100;
-    return diff;
-  }, [primaryPrice, shadowPrice]);
-
-  if (gap === null) {
-    return (
-      <div className="flex items-center gap-2 text-white/20 text-xs tracking-widest">
-        <span className="uppercase">Gap</span>
-        <span className="tabular-nums">--</span>
-      </div>
-    );
-  }
-
-  const absGap = Math.abs(gap);
-  const isAlert = absGap >= GAP_ALERT_THRESHOLD;
-  const isPositive = gap > 0;
-  const shadowSource = primarySource === "hyperliquid" ? "BN" : "HL";
-
-  return (
-    <div className={`flex items-center gap-3 text-xs tracking-widest ${isAlert ? "animate-pulse-yellow" : ""}`}>
-      <span className="text-white/30 uppercase">
-        {primarySource === "hyperliquid" ? "HL" : "BN"} vs {shadowSource}
-      </span>
-      <span 
-        className={`tabular-nums font-medium ${
-          isAlert 
-            ? "text-yellow-400" 
-            : isPositive 
-              ? "text-emerald-400/60" 
-              : "text-red-400/60"
-        }`}
-      >
-        {isPositive ? "+" : ""}{gap.toFixed(3)}%
-      </span>
-      {isAlert && (
-        <span className="text-yellow-400/80 text-[10px] uppercase tracking-wider">
-          Wide Spread
-        </span>
-      )}
     </div>
   );
 }
@@ -1629,7 +1456,7 @@ function NewsSentimentFeed({ selectedAsset = "ETH" }: NewsSentimentFeedProps) {
             </span>
             <span className="text-neutral-700 text-[10px]">|</span>
             <span className="text-neutral-600 text-[10px] font-mono">
-              {ASSET_CONFIG[selectedAsset].coingeckoId ? "COINGECKO" : source || "BINANCE KLINES"}
+              {source || "BINANCE KLINES"}
             </span>
             <span className="text-neutral-700 text-[10px]">|</span>
             <span className="text-neutral-500 text-[9px] font-mono">
@@ -2072,10 +1899,7 @@ export default function Home() {
         {/* Asset Selector + Source Selector */}
         <div className="flex items-center gap-3">
           <AssetSelector asset={asset} onAssetChange={setAsset} />
-          {/* Only show source selector for non-DEX tokens */}
-          {!ASSET_CONFIG[asset].coingeckoId && (
-            <SourceSelector source={source} onSourceChange={setSource} />
-          )}
+          <SourceSelector source={source} onSourceChange={setSource} />
         </div>
 
         {/* Audio unlock hint */}
@@ -2087,9 +1911,7 @@ export default function Home() {
 
         {/* WebSocket Status */}
         <div className="flex items-center gap-2">
-          <span className="text-white/30 text-xs tracking-widest uppercase">
-            {ASSET_CONFIG[asset].coingeckoId ? "API" : "WS"}
-          </span>
+          <span className="text-white/30 text-xs tracking-widest uppercase">WS</span>
           <span 
             className={`h-2.5 w-2.5 rounded-full ${
               status === "connected" 
@@ -2123,7 +1945,7 @@ export default function Home() {
             <span className="text-white/40 text-sm tracking-[0.3em] uppercase">
               {asset} / USD
             </span>
-            <SourceBadge source={source} asset={asset} />
+            <SourceBadge source={source} />
           </div>
 
           {/* Price Display with Digit Roller */}
@@ -2168,12 +1990,7 @@ export default function Home() {
 
       {/* Bottom attribution - Fixed */}
       <div className="fixed bottom-6 left-0 right-0 text-center text-white/10 text-xs tracking-widest uppercase">
-        {ASSET_CONFIG[asset].coingeckoId 
-          ? "CoinGecko" 
-          : source === "hyperliquid" 
-            ? "Hyperliquid" 
-            : "Binance"
-        }
+        {source === "hyperliquid" ? "Hyperliquid" : "Binance"}
       </div>
     </main>
   );
