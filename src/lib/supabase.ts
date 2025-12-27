@@ -1,9 +1,23 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Check if Supabase is configured
+export const isSupabaseConfigured = !!(supabaseUrl && supabaseAnonKey);
+
+// Lazy initialization - only create client if env vars are present
+let supabaseClient: SupabaseClient | null = null;
+
+function getSupabase(): SupabaseClient | null {
+  if (!isSupabaseConfigured) {
+    return null;
+  }
+  if (!supabaseClient) {
+    supabaseClient = createClient(supabaseUrl!, supabaseAnonKey!);
+  }
+  return supabaseClient;
+}
 
 // Types for our tweet data
 export interface StoredTweet {
@@ -24,6 +38,12 @@ export interface StoredTweet {
 
 // Fetch all stored tweets from Supabase
 export async function getStoredTweets(): Promise<StoredTweet[]> {
+  const supabase = getSupabase();
+  if (!supabase) {
+    console.log('Supabase not configured, skipping fetch');
+    return [];
+  }
+
   const { data, error } = await supabase
     .from('tweets')
     .select('*')
@@ -55,6 +75,12 @@ export async function saveTweetImpact(tweet: {
   impactScore: number;
   impactDirection: 'positive' | 'negative' | 'neutral';
 }): Promise<boolean> {
+  const supabase = getSupabase();
+  if (!supabase) {
+    console.log('Supabase not configured, skipping save');
+    return false;
+  }
+
   // First, check if this tweet already exists
   const { data: existing } = await supabase
     .from('tweets')
